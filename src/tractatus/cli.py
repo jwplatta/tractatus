@@ -19,9 +19,11 @@ app = typer.Typer(no_args_is_help=True, help="Tractatus research tools.")
 init_app = typer.Typer(no_args_is_help=True, help="Create a research project.")
 data_app = typer.Typer(no_args_is_help=True, help="Retrieve Tickrake data.")
 config_app = typer.Typer(no_args_is_help=True, help="Manage Tractatus configuration.")
+catalog_app = typer.Typer(no_args_is_help=True, help="Iceberg catalog operations.")
 app.add_typer(init_app, name="init")
 app.add_typer(data_app, name="data")
 app.add_typer(config_app, name="config")
+app.add_typer(catalog_app, name="catalog")
 
 _PROJECT_FILES = {
     ".python-version": "3.11\n",
@@ -186,3 +188,54 @@ def verify() -> None:
         artifact.write_text(__import__("json").dumps(metrics, indent=2))
         mlflow.log_artifact(str(artifact))
         typer.echo(f"MLflow run: {active_run.info.run_id}")
+
+
+@catalog_app.command("publish")
+def catalog_publish(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Discover only, skip upload and commit.")
+    ] = False,
+    provider: Annotated[
+        list[str] | None, typer.Option("--provider", help="Limit to specific providers.")
+    ] = None,
+) -> None:
+    """Discover, upload, and commit options parquet files to the Iceberg table."""
+    from tractatus.catalog import CatalogConfig, Publisher
+
+    config = CatalogConfig.load()
+    publisher = Publisher(config)
+    try:
+        result = publisher.run(dry_run=dry_run, providers=provider)
+    finally:
+        publisher.close()
+
+    typer.echo(f"Discovered: {result.discovered}")
+    typer.echo(f"Uploaded:   {result.uploaded}")
+    typer.echo(f"Committed:  {result.committed}")
+    typer.echo(f"Errors:     {result.errors}")
+    for detail in result.details:
+        typer.echo(detail)
+
+
+@catalog_app.command("status")
+def catalog_status() -> None:
+    """Show publication ledger summary."""
+    from tractatus.catalog import CatalogConfig, Ledger
+
+    config = CatalogConfig.load()
+    if not config.ledger_path.exists():
+        typer.echo("No ledger found. Run 'tractatus catalog publish' first.")
+        raise typer.Exit(0)
+
+    ledger = Ledger(config.ledger_path)
+    try:
+        summary = ledger.summary()
+    finally:
+        ledger.close()
+
+    if not summary:
+        typer.echo("Ledger is empty.")
+        return
+
+    for status, count in sorted(summary.items()):
+        typer.echo(f"{status}: {count}")

@@ -50,7 +50,9 @@ class OptionsQueryClient:
     """
 
     def __init__(self, conn: duckdb.DuckDBPyConnection | None = None) -> None:
-        self._conn: duckdb.DuckDBPyConnection = conn if conn is not None else duckdb.connect(":memory:")
+        self._conn: duckdb.DuckDBPyConnection = (
+            conn if conn is not None else duckdb.connect(":memory:")
+        )
 
     # ------------------------------------------------------------------
     # Point queries
@@ -105,10 +107,7 @@ class OptionsQueryClient:
             " GROUP BY expiration_date",
             [str(parquet_path), start_date.isoformat(), end_date.isoformat()],
         ).fetchall()
-        return [
-            (date.fromisoformat(str(r[0])), datetime.fromisoformat(str(r[1])))
-            for r in rows
-        ]
+        return [(date.fromisoformat(str(r[0])), datetime.fromisoformat(str(r[1]))) for r in rows]
 
     def list_expirations(self, parquet_path: Path, min_date: date) -> list[date]:
         """Return distinct expiration dates >= *min_date* from *parquet_path*."""

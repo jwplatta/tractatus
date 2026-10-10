@@ -1,0 +1,187 @@
+"""Tests for the catalog publication ledger."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from tractatus.catalog.ledger import Ledger
+
+
+def test_record_and_retrieve(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.record_discovered(
+        "schwab/2026/06/25/SPX_samples_2026-06-25.parquet",
+        sha256="abc123",
+        size_bytes=1024,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-06-25",
+    )
+
+    record = ledger.get("schwab/2026/06/25/SPX_samples_2026-06-25.parquet")
+    assert record is not None
+    assert record.status == "discovered"
+    assert record.sha256 == "abc123"
+    assert record.size_bytes == 1024
+    assert record.provider == "schwab"
+    assert record.root == "SPX"
+    assert record.sample_date == "2026-06-25"
+    ledger.close()
+
+
+def test_idempotent_same_hash(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+    ledger.mark_uploaded("a.parquet", "s3/key")
+
+    # Re-discover with same hash — should not reset status
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+
+    record = ledger.get("a.parquet")
+    assert record is not None
+    assert record.status == "uploaded"
+    assert record.s3_key == "s3/key"
+    ledger.close()
+
+
+def test_hash_change_resets_status(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+    ledger.mark_uploaded("a.parquet", "s3/key")
+
+    # Re-discover with different hash — should reset to discovered
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+
+    record = ledger.get("a.parquet")
+    assert record is not None
+    assert record.status == "discovered"
+    assert record.s3_key is None
+    assert record.uploaded_at is None
+    ledger.close()
+
+
+def test_status_transitions(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+
+    assert ledger.get("a.parquet") is not None
+    assert ledger.get("a.parquet").status == "discovered"  # type: ignore[union-attr]
+
+    ledger.mark_uploaded("a.parquet", "s3/key")
+    assert ledger.get("a.parquet").status == "uploaded"  # type: ignore[union-attr]
+
+    ledger.mark_committed(["a.parquet"])
+    assert ledger.get("a.parquet").status == "committed"  # type: ignore[union-attr]
+    ledger.close()
+
+
+def test_mark_error(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+    ledger.mark_error("a.parquet", "upload failed")
+
+    record = ledger.get("a.parquet")
+    assert record is not None
+    assert record.status == "error"
+    assert record.error == "upload failed"
+    ledger.close()
+
+
+def test_pending_queries(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="AAPL",
+        sample_date="2026-01-02",
+    )
+    ledger.mark_uploaded("b.parquet", "s3/b")
+
+    assert len(ledger.pending_upload()) == 1
+    assert ledger.pending_upload()[0].path == "a.parquet"
+    assert len(ledger.pending_commit()) == 1
+    assert ledger.pending_commit()[0].path == "b.parquet"
+    ledger.close()
+
+
+def test_summary(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.record_discovered(
+        "a.parquet",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="AAPL",
+        sample_date="2026-01-02",
+    )
+    ledger.mark_uploaded("b.parquet", "s3/b")
+
+    summary = ledger.summary()
+    assert summary == {"discovered": 1, "uploaded": 1}
+    ledger.close()
+
+
+def test_mark_committed_empty(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_committed([])  # should not raise
+    ledger.close()
