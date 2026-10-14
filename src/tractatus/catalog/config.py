@@ -61,7 +61,7 @@ class CatalogConfig:
 
         return cls(
             iceberg_bucket=iceberg_bucket,
-            iceberg_warehouse=f"s3://{iceberg_bucket}/warehouse",
+            iceberg_warehouse=f"s3://{iceberg_bucket}",
             glue_database=values.get("glue_database") or _DEFAULTS["glue_database"],
             glue_table=values.get("glue_table") or _DEFAULTS["glue_table"],
             aws_region=tc.aws_region,

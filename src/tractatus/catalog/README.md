@@ -14,7 +14,7 @@ Publishes compacted options Parquet files to an Apache Iceberg table backed by A
    PostgreSQL Ledger              ← Tracks: discovered → uploaded → committed
         │
         ▼
-   S3 Upload                      ← Uploads parquet to the Iceberg warehouse bucket
+   S3 Upload                      ← Uploads parquet to the Iceberg lakehouse bucket
         │
         ▼
    Iceberg Commit                 ← Registers files via PyIceberg add_files()
@@ -107,7 +107,7 @@ Create a dedicated Iceberg bucket (or use a prefix in an existing bucket):
 aws s3 mb s3://your-iceberg-bucket --region us-east-1
 ```
 
-The publisher uploads parquet files under `warehouse/{glue_database}/{glue_table}/data/`.
+The publisher uploads parquet files under `{glue_database}/{glue_table}/data/`.
 
 ### Glue Permissions
 

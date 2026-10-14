@@ -140,9 +140,7 @@ class Publisher:
 
     def _s3_key(self, record: FileRecord) -> str:
         """Build a deterministic S3 key for a file."""
-        return (
-            f"warehouse/{self._config.glue_database}/{self._config.glue_table}/data/{record.path}"
-        )
+        return f"{self._config.glue_database}/{self._config.glue_table}/data/{record.path}"
 
     def _boto_session(self) -> boto3.Session:
         session_kwargs: dict[str, str] = {"region_name": self._config.aws_region}
