@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 import boto3
 from pyiceberg.catalog import Catalog, load_catalog
@@ -107,12 +108,18 @@ class Publisher:
                 continue
 
             try:
-                s3.upload_file(str(local_path), self._config.iceberg_bucket, s3_key)
+                if self._s3_key_exists(s3, s3_key):
+                    logger.info("Skipping %s — already exists in S3", s3_key)
+                else:
+                    s3.upload_file(str(local_path), self._config.iceberg_bucket, s3_key)
+                    logger.info(
+                        "Uploaded %s → s3://%s/%s",
+                        record.path,
+                        self._config.iceberg_bucket,
+                        s3_key,
+                    )
                 self._ledger.mark_uploaded(record.path, table_name, s3_key)
                 uploaded += 1
-                logger.info(
-                    "Uploaded %s → s3://%s/%s", record.path, self._config.iceberg_bucket, s3_key
-                )
             except Exception as exc:
                 self._ledger.mark_error(record.path, table_name, str(exc))
                 errors += 1
@@ -151,6 +158,14 @@ class Publisher:
             for record in pending:
                 self._ledger.mark_error(record.path, table_name, f"Commit failed: {exc}")
             return 0, len(pending)
+
+    def _s3_key_exists(self, s3: Any, s3_key: str) -> bool:
+        """Check if an S3 key already exists via HEAD request."""
+        try:
+            s3.head_object(Bucket=self._config.iceberg_bucket, Key=s3_key)
+            return True
+        except Exception:
+            return False
 
     def _s3_key(self, table_name: str, record: FileRecord) -> str:
         """Build a deterministic S3 key for a file."""

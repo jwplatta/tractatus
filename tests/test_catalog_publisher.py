@@ -62,6 +62,7 @@ def test_full_pipeline(
     _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
 
     mock_s3 = MagicMock()
+    mock_s3.head_object.side_effect = Exception("Not found")
     mock_session_cls.return_value.client.return_value = mock_s3
 
     mock_table = MagicMock()
@@ -88,6 +89,7 @@ def test_upload_error_marks_file(mock_session_cls: MagicMock, tmp_path: Path) ->
     _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
 
     mock_s3 = MagicMock()
+    mock_s3.head_object.side_effect = Exception("Not found")
     mock_s3.upload_file.side_effect = Exception("S3 error")
     mock_session_cls.return_value.client.return_value = mock_s3
 
@@ -109,6 +111,7 @@ def test_commit_error_marks_files(
     _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
 
     mock_s3 = MagicMock()
+    mock_s3.head_object.side_effect = Exception("Not found")
     mock_session_cls.return_value.client.return_value = mock_s3
 
     mock_table = MagicMock()

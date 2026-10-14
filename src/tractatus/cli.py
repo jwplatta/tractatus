@@ -257,6 +257,7 @@ def catalog_reset(
     drop_iceberg: Annotated[
         bool, typer.Option("--drop-iceberg", help="Also drop the Iceberg table from Glue.")
     ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Reset the ledger and optionally clean up S3/Iceberg for a table.
 
@@ -268,6 +269,17 @@ def catalog_reset(
     ledger = Ledger(config.database_url)
 
     try:
+        summary = ledger.summary(table_name=table)
+        total = sum(summary.values()) if summary else 0
+        parts = [f"{total} ledger records"]
+        if delete_s3:
+            parts.append("S3 data")
+        if drop_iceberg:
+            parts.append("Iceberg table")
+        msg = f"This will delete {', '.join(parts)} for table {table!r}. Continue?"
+        if not yes and not typer.confirm(msg, default=False):
+            raise typer.Abort()
+
         if delete_s3:
             # Delete all S3 objects under the table's data prefix
             session_kwargs: dict[str, str] = {"region_name": config.aws_region}
