@@ -1,12 +1,15 @@
-"""PostgreSQL-backed ledger for tracking file discovery and publication progress."""
+"""Publication ledger for tracking file discovery and publication progress.
+
+Uses SQLite by default (for local development and testing). Connects to
+PostgreSQL when the database URL starts with ``postgresql://``.
+"""
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
-
-import psycopg
-from psycopg.rows import class_row
+from typing import Any
 
 
 @dataclass
@@ -48,23 +51,59 @@ CREATE TABLE IF NOT EXISTS catalog_files (
 
 _CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_catalog_files_status ON catalog_files (status)"
 
+_COLUMNS = (
+    "path, sha256, size_bytes, provider, root, sample_date, "
+    "s3_key, status, error, discovered_at, uploaded_at, committed_at, updated_at"
+)
+
 
 class Ledger:
-    """Persistent publication ledger backed by PostgreSQL.
+    """Persistent publication ledger backed by SQLite or PostgreSQL.
 
-    Connects to the ``tractatus`` database in the shared quant-infra
-    PostgreSQL instance.  Creates the ``catalog_files`` table on first
-    connection if it does not already exist.
+    Pass a file path or ``sqlite://`` URL for SQLite, or a
+    ``postgresql://`` URL for PostgreSQL.
     """
 
     def __init__(self, database_url: str) -> None:
-        self._conn = psycopg.connect(database_url, autocommit=True)
+        self._is_pg = database_url.startswith("postgresql://")
+        if self._is_pg:
+            import psycopg
+
+            self._conn: Any = psycopg.connect(database_url, autocommit=True)
+        else:
+            path = (
+                database_url.removeprefix("sqlite:///")
+                if database_url.startswith("sqlite:")
+                else database_url
+            )
+            self._conn = sqlite3.connect(path)
+            self._conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
         """Create the catalog_files table and indexes if they don't exist."""
         self._conn.execute(_CREATE_TABLE)
         self._conn.execute(_CREATE_INDEX)
+        if not self._is_pg:
+            self._conn.commit()
+
+    def _execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Any:
+        if not self._is_pg:
+            sql = sql.replace("%s", "?")
+        result = self._conn.execute(sql, params)
+        if not self._is_pg:
+            self._conn.commit()
+        return result
+
+    def _fetchall(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> list[Any]:
+        if not self._is_pg:
+            sql = sql.replace("%s", "?")
+        return list(self._conn.execute(sql, params).fetchall())
+
+    def _fetchone(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Any:
+        if not self._is_pg:
+            sql = sql.replace("%s", "?")
+        return self._conn.execute(sql, params).fetchone()
 
     def close(self) -> None:
         self._conn.close()
@@ -84,12 +123,11 @@ class Ledger:
     ) -> None:
         """Insert a new file or update an existing one if the hash changed."""
         now = self._now()
-        self._conn.execute(
+        self._execute(
             """\
             INSERT INTO catalog_files (path, sha256, size_bytes, provider, root, sample_date,
                                        status, discovered_at, updated_at)
-            VALUES (%(path)s, %(sha256)s, %(size_bytes)s, %(provider)s, %(root)s,
-                    %(sample_date)s, 'discovered', %(now)s, %(now)s)
+            VALUES (%s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
             ON CONFLICT (path) DO UPDATE SET
                 sha256 = EXCLUDED.sha256,
                 size_bytes = EXCLUDED.size_bytes,
@@ -113,27 +151,18 @@ class Ledger:
                     WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN NULL
                     ELSE catalog_files.committed_at
                 END,
-                updated_at = %(now)s
+                updated_at = EXCLUDED.updated_at
             """,
-            {
-                "path": path,
-                "sha256": sha256,
-                "size_bytes": size_bytes,
-                "provider": provider,
-                "root": root,
-                "sample_date": sample_date,
-                "now": now,
-            },
+            (path, sha256, size_bytes, provider, root, sample_date, now, now),
         )
 
     def mark_uploaded(self, path: str, s3_key: str) -> None:
         """Transition a file to uploaded status."""
         now = self._now()
-        self._conn.execute(
-            "UPDATE catalog_files SET status = 'uploaded', s3_key = %(s3_key)s, "
-            "uploaded_at = %(now)s, error = NULL, updated_at = %(now)s "
-            "WHERE path = %(path)s",
-            {"s3_key": s3_key, "now": now, "path": path},
+        self._execute(
+            "UPDATE catalog_files SET status = 'uploaded', s3_key = %s, "
+            "uploaded_at = %s, error = NULL, updated_at = %s WHERE path = %s",
+            (s3_key, now, now, path),
         )
 
     def mark_committed(self, paths: list[str]) -> None:
@@ -141,20 +170,28 @@ class Ledger:
         if not paths:
             return
         now = self._now()
-        self._conn.execute(
-            "UPDATE catalog_files SET status = 'committed', committed_at = %(now)s, "
-            "error = NULL, updated_at = %(now)s "
-            "WHERE path = ANY(%(paths)s)",
-            {"now": now, "paths": paths},
-        )
+        if self._is_pg:
+            self._execute(
+                "UPDATE catalog_files SET status = 'committed', committed_at = %s, "
+                "error = NULL, updated_at = %s WHERE path = ANY(%s)",
+                (now, now, paths),
+            )
+        else:
+            placeholders = ",".join("?" for _ in paths)
+            self._conn.execute(
+                f"UPDATE catalog_files SET status = 'committed', committed_at = ?, "
+                f"error = NULL, updated_at = ? WHERE path IN ({placeholders})",
+                [now, now, *paths],
+            )
+            self._conn.commit()
 
     def mark_error(self, path: str, error: str) -> None:
         """Record an error for a file."""
         now = self._now()
-        self._conn.execute(
-            "UPDATE catalog_files SET status = 'error', error = %(error)s, "
-            "updated_at = %(now)s WHERE path = %(path)s",
-            {"error": error, "now": now, "path": path},
+        self._execute(
+            "UPDATE catalog_files SET status = 'error', error = %s, "
+            "updated_at = %s WHERE path = %s",
+            (error, now, path),
         )
 
     def pending_upload(self) -> list[FileRecord]:
@@ -167,28 +204,17 @@ class Ledger:
 
     def summary(self) -> dict[str, int]:
         """Return counts by status."""
-        rows = self._conn.execute(
-            "SELECT status, COUNT(*) FROM catalog_files GROUP BY status"
-        ).fetchall()
+        rows = self._fetchall("SELECT status, COUNT(*) FROM catalog_files GROUP BY status")
         return {row[0]: row[1] for row in rows}
 
     def get(self, path: str) -> FileRecord | None:
         """Look up a single file record."""
-        with self._conn.cursor(row_factory=class_row(FileRecord)) as cur:
-            cur.execute(
-                "SELECT path, sha256, size_bytes, provider, root, sample_date, "
-                "s3_key, status, error, discovered_at, uploaded_at, committed_at, updated_at "
-                "FROM catalog_files WHERE path = %(path)s",
-                {"path": path},
-            )
-            return cur.fetchone()
+        row = self._fetchone(f"SELECT {_COLUMNS} FROM catalog_files WHERE path = %s", (path,))
+        return FileRecord(*row) if row else None
 
     def _query_status(self, status: str) -> list[FileRecord]:
-        with self._conn.cursor(row_factory=class_row(FileRecord)) as cur:
-            cur.execute(
-                "SELECT path, sha256, size_bytes, provider, root, sample_date, "
-                "s3_key, status, error, discovered_at, uploaded_at, committed_at, updated_at "
-                "FROM catalog_files WHERE status = %(status)s ORDER BY path",
-                {"status": status},
-            )
-            return cur.fetchall()
+        rows = self._fetchall(
+            f"SELECT {_COLUMNS} FROM catalog_files WHERE status = %s ORDER BY path",
+            (status,),
+        )
+        return [FileRecord(*row) for row in rows]

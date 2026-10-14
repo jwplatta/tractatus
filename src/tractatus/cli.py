@@ -223,7 +223,7 @@ def catalog_status() -> None:
     from tractatus.catalog import CatalogConfig, Ledger
 
     config = CatalogConfig.load()
-    ledger = Ledger(config.database_url)
+    ledger = Ledger(config.database_url)  # connects to SQLite or PostgreSQL
     try:
         summary = ledger.summary()
     finally:

@@ -1,50 +1,19 @@
-"""Tests for the catalog publication ledger.
-
-Requires a PostgreSQL instance. Set CATALOG_DATABASE_URL to run these tests.
-Defaults to the quant-infra dev instance.
-"""
+"""Tests for the catalog publication ledger (SQLite backend)."""
 
 from __future__ import annotations
 
-import os
+from pathlib import Path
 
-import psycopg
 import pytest
 
 from tractatus.catalog.ledger import Ledger
 
-_TEST_DB_URL = os.environ.get(
-    "CATALOG_DATABASE_URL",
-    "postgresql://tractatus_user:tractatus@localhost:5433/tractatus",
-)
-
-
-def _pg_available() -> bool:
-    try:
-        conn = psycopg.connect(_TEST_DB_URL, connect_timeout=2)
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(not _pg_available(), reason="PostgreSQL not available")
-
 
 @pytest.fixture()
-def ledger() -> Ledger:  # type: ignore[misc]
-    """Create a ledger connected to the test database with a clean table."""
-    conn = psycopg.connect(_TEST_DB_URL, autocommit=True)
-    conn.execute("DROP TABLE IF EXISTS catalog_files")
-    conn.close()
-
-    led = Ledger(_TEST_DB_URL)  # creates the table via _ensure_schema
+def ledger(tmp_path: Path) -> Ledger:  # type: ignore[misc]
+    led = Ledger(str(tmp_path / "ledger.db"))
     yield led  # type: ignore[misc]
     led.close()
-
-    conn = psycopg.connect(_TEST_DB_URL, autocommit=True)
-    conn.execute("DROP TABLE IF EXISTS catalog_files")
-    conn.close()
 
 
 def test_record_and_retrieve(ledger: Ledger) -> None:

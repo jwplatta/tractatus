@@ -11,7 +11,7 @@ from tractatus.config import TractatusConfig
 _DEFAULTS: dict[str, str] = {
     "glue_database": "tractatus",
     "glue_table": "options",
-    "catalog_database_url": "postgresql://tractatus_user:tractatus@localhost:5432/tractatus",
+    "catalog_database_url": str(Path.home() / ".tractatus" / "catalog_ledger.db"),
 }
 
 _ENV_NAMES: dict[str, str] = {

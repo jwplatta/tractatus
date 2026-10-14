@@ -34,7 +34,7 @@ Publishes compacted options Parquet files to an Apache Iceberg table backed by A
 | Variable              | Required | Default                                                          | Description                                          |
 |-----------------------|----------|------------------------------------------------------------------|------------------------------------------------------|
 | `ICEBERG_BUCKET`      | **yes**  | —                                                                | S3 bucket for Iceberg table data and metadata        |
-| `CATALOG_DATABASE_URL`| no       | `postgresql://tractatus_user:tractatus@localhost:5432/tractatus`  | PostgreSQL connection string for the publication ledger |
+| `CATALOG_DATABASE_URL`| no       | `~/.tractatus/catalog_ledger.db` (SQLite)                        | Database URL: file path for SQLite, `postgresql://` URL for PostgreSQL |
 | `OPTIONS_DATA_ROOT`   | no       | `$TICKRAKE_DATA_DIR/options`                                     | Local directory to scan for compacted parquet files   |
 | `GLUE_DATABASE`       | no       | `tractatus`                                                      | AWS Glue database name                               |
 | `GLUE_TABLE`          | no       | `options`                                                        | AWS Glue table name                                  |
@@ -45,23 +45,33 @@ Variables inherited from `TractatusConfig`:
 - `TICKRAKE_DATA_DIR` — base data directory (default `~/.tickrake/data`)
 - `S3_BUCKET` — existing archive bucket (not used by catalog, but resolved by TractatusConfig)
 
-## PostgreSQL Setup (quant-infra)
+## Ledger Database
 
-The catalog ledger lives in a `tractatus` database on the shared quant-infra PostgreSQL instance. The database and user are created by the quant-infra init script:
+The publication ledger supports two backends:
+
+### SQLite (default)
+
+Used for local development and testing. No setup needed — the database file is created automatically at `~/.tractatus/catalog_ledger.db` (or wherever `CATALOG_DATABASE_URL` points).
+
+### PostgreSQL (production)
+
+For production, point to the quant-infra PostgreSQL instance:
+
+```bash
+export CATALOG_DATABASE_URL=postgresql://tractatus_user:tractatus@localhost:5432/tractatus
+```
+
+The quant-infra init script creates the database and user:
 
 ```
 quant-infra/services/postgres/init/02-create-catalog-tables.sql
 ```
 
-This creates:
-- Database: `tractatus`
-- User: `tractatus_user` (password: `tractatus`)
-
 The `catalog_files` table and indexes are created automatically by the `Ledger` class on first connection (`CREATE TABLE IF NOT EXISTS`), so the schema definition lives in this repo alongside the code that uses it.
 
-### For existing instances
+#### For existing postgres instances
 
-If the postgres container already has its data volume, the database init script won't re-run automatically. Create the database and user manually:
+If the postgres container already has its data volume, the init script won't re-run. Create the database and user manually:
 
 ```bash
 # Dev (port 5433)
@@ -71,11 +81,9 @@ psql -h localhost -p 5433 -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE tract
 psql -h localhost -p 5433 -U postgres -d tractatus -c "GRANT ALL ON SCHEMA public TO tractatus_user;"
 ```
 
-The table itself will be created on the first `tractatus catalog publish` or `tractatus catalog status` run.
-
 ### Connection from containers
 
-Inside the Docker network, use `postgres` as the hostname:
+From a container on the Docker network:
 
 ```
 CATALOG_DATABASE_URL=postgresql://tractatus_user:tractatus@postgres:5432/tractatus
@@ -86,6 +94,8 @@ From the host machine (dev):
 ```
 CATALOG_DATABASE_URL=postgresql://tractatus_user:tractatus@localhost:5433/tractatus
 ```
+
+Omit `CATALOG_DATABASE_URL` entirely to use SQLite (local dev default).
 
 ## AWS Setup
 
