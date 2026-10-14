@@ -17,7 +17,6 @@ def _make_config(tmp_path: Path) -> CatalogConfig:
         iceberg_bucket="test-bucket",
         iceberg_warehouse="s3://test-bucket",
         glue_database="tractatus",
-        glue_table="options",
         aws_region="us-east-1",
         aws_profile=None,
         data_root=data_root,

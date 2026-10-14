@@ -11,7 +11,7 @@ from pyiceberg.catalog import Catalog, load_catalog
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import discover_files
 from tractatus.catalog.ledger import FileRecord, Ledger
-from tractatus.catalog.schema import ensure_table
+from tractatus.catalog.schema import OPTIONS_TABLE, ensure_table
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ class Publisher:
             return 0, 0
 
         catalog = self._iceberg_catalog()
-        table = ensure_table(catalog, self._config.glue_database, self._config.glue_table)
+        table = ensure_table(catalog, self._config.glue_database, OPTIONS_TABLE.name)
 
         s3_paths = [
             f"s3://{self._config.iceberg_bucket}/{r.s3_key}"
@@ -140,7 +140,7 @@ class Publisher:
 
     def _s3_key(self, record: FileRecord) -> str:
         """Build a deterministic S3 key for a file."""
-        return f"{self._config.glue_database}/{self._config.glue_table}/data/{record.path}"
+        return f"{self._config.glue_database}/{OPTIONS_TABLE.name}/data/{record.path}"
 
     def _boto_session(self) -> boto3.Session:
         session_kwargs: dict[str, str] = {"region_name": self._config.aws_region}

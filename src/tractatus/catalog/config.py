@@ -10,14 +10,12 @@ from tractatus.config import TractatusConfig
 
 _DEFAULTS: dict[str, str] = {
     "glue_database": "tractatus",
-    "glue_table": "options",
     "catalog_database_url": str(Path.home() / ".tractatus" / "catalog_ledger.db"),
 }
 
 _ENV_NAMES: dict[str, str] = {
     "iceberg_bucket": "ICEBERG_BUCKET",
     "glue_database": "GLUE_DATABASE",
-    "glue_table": "GLUE_TABLE",
     "catalog_database_url": "CATALOG_DATABASE_URL",
     "options_data_root": "OPTIONS_DATA_ROOT",
 }
@@ -30,7 +28,6 @@ class CatalogConfig:
     iceberg_bucket: str
     iceberg_warehouse: str
     glue_database: str
-    glue_table: str
     aws_region: str
     aws_profile: str | None
     data_root: Path
@@ -63,7 +60,6 @@ class CatalogConfig:
             iceberg_bucket=iceberg_bucket,
             iceberg_warehouse=f"s3://{iceberg_bucket}",
             glue_database=values.get("glue_database") or _DEFAULTS["glue_database"],
-            glue_table=values.get("glue_table") or _DEFAULTS["glue_table"],
             aws_region=tc.aws_region,
             aws_profile=tc.aws_profile,
             data_root=data_root,
