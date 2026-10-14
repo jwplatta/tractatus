@@ -13,7 +13,7 @@ from pyiceberg.catalog import Catalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
-from pyiceberg.transforms import IdentityTransform
+from pyiceberg.transforms import MonthTransform
 from pyiceberg.types import (
     BooleanType,
     DoubleType,
@@ -88,10 +88,10 @@ OPTIONS_TABLE = TableDef(
     ),
     partition_spec=PartitionSpec(
         PartitionField(
-            source_id=5,
+            source_id=31,
             field_id=1000,
-            transform=IdentityTransform(),
-            name="expiration_date",
+            transform=MonthTransform(),
+            name="sampled_at_month",
         )
     ),
 )

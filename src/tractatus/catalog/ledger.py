@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -79,6 +80,7 @@ class Ledger:
                 if database_url.startswith("sqlite:")
                 else database_url
             )
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(path)
             self._conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_schema()
