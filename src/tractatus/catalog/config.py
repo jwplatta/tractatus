@@ -17,7 +17,6 @@ _ENV_NAMES: dict[str, str] = {
     "iceberg_bucket": "ICEBERG_BUCKET",
     "glue_database": "GLUE_DATABASE",
     "catalog_database_url": "CATALOG_DATABASE_URL",
-    "options_data_root": "OPTIONS_DATA_ROOT",
 }
 
 
@@ -51,17 +50,12 @@ class CatalogConfig:
         if not iceberg_bucket:
             raise ValueError("Missing required configuration: ICEBERG_BUCKET environment variable")
 
-        data_root_str = values.get("options_data_root")
-        data_root = (
-            Path(data_root_str).expanduser() if data_root_str else tc.tickrake_data_dir / "options"
-        )
-
         return cls(
             iceberg_bucket=iceberg_bucket,
             iceberg_warehouse=f"s3://{iceberg_bucket}",
             glue_database=values.get("glue_database") or _DEFAULTS["glue_database"],
             aws_region=tc.aws_region,
             aws_profile=tc.aws_profile,
-            data_root=data_root,
+            data_root=tc.tickrake_data_dir,
             database_url=values.get("catalog_database_url") or _DEFAULTS["catalog_database_url"],
         )

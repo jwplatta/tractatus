@@ -35,15 +35,12 @@ Publishes compacted options Parquet files to an Apache Iceberg table backed by A
 |-----------------------|----------|------------------------------------------------------------------|------------------------------------------------------|
 | `ICEBERG_BUCKET`      | **yes**  | —                                                                | S3 bucket for Iceberg table data and metadata        |
 | `CATALOG_DATABASE_URL`| no       | `~/.tractatus/catalog_ledger.db` (SQLite)                        | Database URL: file path for SQLite, `postgresql://` URL for PostgreSQL |
-| `OPTIONS_DATA_ROOT`   | no       | `$TICKRAKE_DATA_DIR/options`                                     | Local directory to scan for compacted parquet files   |
 | `GLUE_DATABASE`       | no       | `tractatus`                                                      | AWS Glue database name                               |
-| `GLUE_TABLE`          | no       | `options`                                                        | AWS Glue table name                                  |
 | `AWS_PROFILE`         | no       | —                                                                | AWS profile for S3 and Glue access                   |
 | `AWS_REGION`          | no       | `us-east-1`                                                      | AWS region for Glue and S3                           |
 
 Variables inherited from `TractatusConfig`:
-- `TICKRAKE_DATA_DIR` — base data directory (default `~/.tickrake/data`)
-- `S3_BUCKET` — existing archive bucket (not used by catalog, but resolved by TractatusConfig)
+- `TICKRAKE_DATA_DIR` — base data directory (default `~/.tickrake/data`). The publisher scans `$TICKRAKE_DATA_DIR/{table_name}/` for each table (e.g. `options/`, `level_one/`).
 
 ## Ledger Database
 
@@ -107,7 +104,7 @@ Create a dedicated Iceberg bucket (or use a prefix in an existing bucket):
 aws s3 mb s3://your-iceberg-bucket --region us-east-1
 ```
 
-The publisher uploads parquet files under `{glue_database}/{glue_table}/data/`.
+The publisher uploads parquet files under `{glue_database}/{table_name}/data/`.
 
 ### Glue Permissions
 
@@ -162,7 +159,7 @@ tractatus catalog status
 ## Running in quant-infra
 
 The publisher will run as a container in quant-infra. It needs:
-- Read-only mount of `~/.tickrake/data` (or `OPTIONS_DATA_ROOT`)
+- Read-only mount of `~/.tickrake/data` (mapped to `TICKRAKE_DATA_DIR` inside the container)
 - Network access to the postgres service
 - AWS credentials (via environment or mounted profile)
 - `ICEBERG_BUCKET` environment variable
@@ -174,10 +171,10 @@ tractatus-publisher:
   image: tractatus-publisher:latest
   profiles: [prod]
   environment:
-    ICEBERG_BUCKET: your-iceberg-bucket
+    ICEBERG_BUCKET: tractatus-lakehouse
     CATALOG_DATABASE_URL: postgresql://tractatus_user:tractatus@postgres:5432/tractatus
+    TICKRAKE_DATA_DIR: /data
     AWS_PROFILE: default
-    OPTIONS_DATA_ROOT: /data/options
   volumes:
     - ~/.tickrake/data:/data:ro
     - ~/.aws:/root/.aws:ro

@@ -17,6 +17,7 @@ class FileRecord:
     """A row in the publication ledger."""
 
     path: str
+    table_name: str
     sha256: str
     size_bytes: int
     provider: str
@@ -33,7 +34,8 @@ class FileRecord:
 
 _CREATE_TABLE = """\
 CREATE TABLE IF NOT EXISTS catalog_files (
-    path          TEXT PRIMARY KEY,
+    path          TEXT NOT NULL,
+    table_name    TEXT NOT NULL,
     sha256        TEXT NOT NULL,
     size_bytes    BIGINT NOT NULL,
     provider      TEXT NOT NULL,
@@ -45,14 +47,15 @@ CREATE TABLE IF NOT EXISTS catalog_files (
     discovered_at TEXT NOT NULL,
     uploaded_at   TEXT,
     committed_at  TEXT,
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (path, table_name)
 )
 """
 
 _CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_catalog_files_status ON catalog_files (status)"
 
 _COLUMNS = (
-    "path, sha256, size_bytes, provider, root, sample_date, "
+    "path, table_name, sha256, size_bytes, provider, root, sample_date, "
     "s3_key, status, error, discovered_at, uploaded_at, committed_at, updated_at"
 )
 
@@ -115,6 +118,7 @@ class Ledger:
     def record_discovered(
         self,
         path: str,
+        table_name: str,
         sha256: str,
         size_bytes: int,
         provider: str,
@@ -125,10 +129,10 @@ class Ledger:
         now = self._now()
         self._execute(
             """\
-            INSERT INTO catalog_files (path, sha256, size_bytes, provider, root, sample_date,
-                                       status, discovered_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
-            ON CONFLICT (path) DO UPDATE SET
+            INSERT INTO catalog_files (path, table_name, sha256, size_bytes, provider, root,
+                                       sample_date, status, discovered_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
+            ON CONFLICT (path, table_name) DO UPDATE SET
                 sha256 = EXCLUDED.sha256,
                 size_bytes = EXCLUDED.size_bytes,
                 status = CASE
@@ -153,19 +157,20 @@ class Ledger:
                 END,
                 updated_at = EXCLUDED.updated_at
             """,
-            (path, sha256, size_bytes, provider, root, sample_date, now, now),
+            (path, table_name, sha256, size_bytes, provider, root, sample_date, now, now),
         )
 
-    def mark_uploaded(self, path: str, s3_key: str) -> None:
+    def mark_uploaded(self, path: str, table_name: str, s3_key: str) -> None:
         """Transition a file to uploaded status."""
         now = self._now()
         self._execute(
             "UPDATE catalog_files SET status = 'uploaded', s3_key = %s, "
-            "uploaded_at = %s, error = NULL, updated_at = %s WHERE path = %s",
-            (s3_key, now, now, path),
+            "uploaded_at = %s, error = NULL, updated_at = %s "
+            "WHERE path = %s AND table_name = %s",
+            (s3_key, now, now, path, table_name),
         )
 
-    def mark_committed(self, paths: list[str]) -> None:
+    def mark_committed(self, paths: list[str], table_name: str) -> None:
         """Batch-transition files to committed status."""
         if not paths:
             return
@@ -173,48 +178,70 @@ class Ledger:
         if self._is_pg:
             self._execute(
                 "UPDATE catalog_files SET status = 'committed', committed_at = %s, "
-                "error = NULL, updated_at = %s WHERE path = ANY(%s)",
-                (now, now, paths),
+                "error = NULL, updated_at = %s "
+                "WHERE path = ANY(%s) AND table_name = %s",
+                (now, now, paths, table_name),
             )
         else:
             placeholders = ",".join("?" for _ in paths)
             self._conn.execute(
                 f"UPDATE catalog_files SET status = 'committed', committed_at = ?, "
-                f"error = NULL, updated_at = ? WHERE path IN ({placeholders})",
-                [now, now, *paths],
+                f"error = NULL, updated_at = ? "
+                f"WHERE path IN ({placeholders}) AND table_name = ?",
+                [now, now, *paths, table_name],
             )
             self._conn.commit()
 
-    def mark_error(self, path: str, error: str) -> None:
+    def mark_error(self, path: str, table_name: str, error: str) -> None:
         """Record an error for a file."""
         now = self._now()
         self._execute(
             "UPDATE catalog_files SET status = 'error', error = %s, "
-            "updated_at = %s WHERE path = %s",
-            (error, now, path),
+            "updated_at = %s WHERE path = %s AND table_name = %s",
+            (error, now, path, table_name),
         )
 
-    def pending_upload(self) -> list[FileRecord]:
-        """Return files with status=discovered."""
-        return self._query_status("discovered")
+    def pending_upload(self, table_name: str) -> list[FileRecord]:
+        """Return files with status=discovered for the given table."""
+        return self._query_status("discovered", table_name)
 
-    def pending_commit(self) -> list[FileRecord]:
-        """Return files with status=uploaded."""
-        return self._query_status("uploaded")
+    def pending_commit(self, table_name: str) -> list[FileRecord]:
+        """Return files with status=uploaded for the given table."""
+        return self._query_status("uploaded", table_name)
 
-    def summary(self) -> dict[str, int]:
-        """Return counts by status."""
-        rows = self._fetchall("SELECT status, COUNT(*) FROM catalog_files GROUP BY status")
+    def summary(self, table_name: str | None = None) -> dict[str, int]:
+        """Return counts by status, optionally filtered by table."""
+        if table_name:
+            rows = self._fetchall(
+                "SELECT status, COUNT(*) FROM catalog_files WHERE table_name = %s GROUP BY status",
+                (table_name,),
+            )
+        else:
+            rows = self._fetchall("SELECT status, COUNT(*) FROM catalog_files GROUP BY status")
         return {row[0]: row[1] for row in rows}
 
-    def get(self, path: str) -> FileRecord | None:
+    def get(self, path: str, table_name: str) -> FileRecord | None:
         """Look up a single file record."""
-        row = self._fetchone(f"SELECT {_COLUMNS} FROM catalog_files WHERE path = %s", (path,))
+        row = self._fetchone(
+            f"SELECT {_COLUMNS} FROM catalog_files WHERE path = %s AND table_name = %s",
+            (path, table_name),
+        )
         return FileRecord(*row) if row else None
 
-    def _query_status(self, status: str) -> list[FileRecord]:
+    def delete_all(self, table_name: str) -> int:
+        """Delete all records for a table. Returns the count deleted."""
         rows = self._fetchall(
-            f"SELECT {_COLUMNS} FROM catalog_files WHERE status = %s ORDER BY path",
-            (status,),
+            "SELECT COUNT(*) FROM catalog_files WHERE table_name = %s",
+            (table_name,),
+        )
+        count = rows[0][0] if rows else 0
+        self._execute("DELETE FROM catalog_files WHERE table_name = %s", (table_name,))
+        return count
+
+    def _query_status(self, status: str, table_name: str) -> list[FileRecord]:
+        rows = self._fetchall(
+            f"SELECT {_COLUMNS} FROM catalog_files "
+            f"WHERE status = %s AND table_name = %s ORDER BY path",
+            (status, table_name),
         )
         return [FileRecord(*row) for row in rows]
