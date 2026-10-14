@@ -199,6 +199,9 @@ def catalog_publish(
     provider: Annotated[
         list[str] | None, typer.Option("--provider", help="Limit to specific providers.")
     ] = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Max files to upload and commit.")
+    ] = None,
 ) -> None:
     """Discover, upload, and commit parquet files to an Iceberg table."""
     from tractatus.catalog import CatalogConfig, Publisher
@@ -206,7 +209,7 @@ def catalog_publish(
     config = CatalogConfig.load()
     publisher = Publisher(config)
     try:
-        result = publisher.run(table_name=table, dry_run=dry_run, providers=provider)
+        result = publisher.run(table_name=table, dry_run=dry_run, providers=provider, limit=limit)
     finally:
         publisher.close()
 

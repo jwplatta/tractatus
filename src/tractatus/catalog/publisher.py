@@ -42,6 +42,7 @@ class Publisher:
         table_name: str,
         dry_run: bool = False,
         providers: list[str] | None = None,
+        limit: int | None = None,
     ) -> PublishResult:
         """Execute the full discover → upload → commit pipeline for a table."""
         if table_name not in TABLE_DEFS:
@@ -56,10 +57,10 @@ class Publisher:
             result.details.append("Dry run — skipping upload and commit.")
             return result
 
-        result.uploaded, upload_errors = self._upload(table_name)
+        result.uploaded, upload_errors = self._upload(table_name, limit=limit)
         result.errors += upload_errors
 
-        committed, commit_errors = self._commit(table_name)
+        committed, commit_errors = self._commit(table_name, limit=limit)
         result.committed = committed
         result.errors += commit_errors
 
@@ -82,9 +83,11 @@ class Publisher:
         logger.info("Discovered %d parquet files for table %s", len(files), table_name)
         return len(files)
 
-    def _upload(self, table_name: str) -> tuple[int, int]:
+    def _upload(self, table_name: str, limit: int | None = None) -> tuple[int, int]:
         """Upload pending files to S3. Returns (uploaded_count, error_count)."""
         pending = self._ledger.pending_upload(table_name)
+        if limit is not None:
+            pending = pending[:limit]
         if not pending:
             return 0, 0
 
@@ -117,9 +120,11 @@ class Publisher:
 
         return uploaded, errors
 
-    def _commit(self, table_name: str) -> tuple[int, int]:
+    def _commit(self, table_name: str, limit: int | None = None) -> tuple[int, int]:
         """Commit uploaded files to Iceberg. Returns (committed_count, error_count)."""
         pending = self._ledger.pending_commit(table_name)
+        if limit is not None:
+            pending = pending[:limit]
         if not pending:
             return 0, 0
 

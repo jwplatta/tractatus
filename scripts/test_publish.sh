@@ -24,8 +24,10 @@ echo "=== Step 1: Dry run (discover only) ==="
 uv run tractatus catalog publish --table "$TABLE" --dry-run
 echo
 
-echo "=== Step 2: Publish ==="
-uv run tractatus catalog publish --table "$TABLE"
+LIMIT="${LIMIT:-2}"
+
+echo "=== Step 2: Publish (limit=$LIMIT) ==="
+uv run tractatus catalog publish --table "$TABLE" --limit "$LIMIT"
 echo
 
 echo "=== Step 3: Check ledger status ==="
