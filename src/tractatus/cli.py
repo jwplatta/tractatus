@@ -276,7 +276,7 @@ def catalog_reset(
             import boto3
 
             s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
-            prefix = f"{config.glue_database}/{table}/data/"
+            prefix = f"{config.glue_database}/{table}/"
             typer.echo(f"Deleting s3://{config.iceberg_bucket}/{prefix}*")
             paginator = s3.get_paginator("list_objects_v2")
             deleted = 0
