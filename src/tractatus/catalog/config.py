@@ -1,4 +1,4 @@
-"""Configuration for the Iceberg catalog publisher and reader."""
+"""Configuration for the Iceberg catalog publisher."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from tractatus.config import TractatusConfig
 _DEFAULTS: dict[str, str] = {
     "glue_database": "tractatus",
     "glue_table": "options",
-    "catalog_ledger_path": str(Path.home() / ".tractatus" / "catalog_ledger.db"),
+    "catalog_database_url": "postgresql://tractatus_user:tractatus@localhost:5432/tractatus",
 }
 
 _ENV_NAMES: dict[str, str] = {
     "iceberg_bucket": "ICEBERG_BUCKET",
     "glue_database": "GLUE_DATABASE",
     "glue_table": "GLUE_TABLE",
-    "catalog_ledger_path": "CATALOG_LEDGER_PATH",
+    "catalog_database_url": "CATALOG_DATABASE_URL",
     "options_data_root": "OPTIONS_DATA_ROOT",
 }
 
@@ -34,7 +34,7 @@ class CatalogConfig:
     aws_region: str
     aws_profile: str | None
     data_root: Path
-    ledger_path: Path
+    database_url: str
 
     @classmethod
     def load(cls, tractatus_config: TractatusConfig | None = None) -> CatalogConfig:
@@ -67,7 +67,5 @@ class CatalogConfig:
             aws_region=tc.aws_region,
             aws_profile=tc.aws_profile,
             data_root=data_root,
-            ledger_path=Path(
-                values.get("catalog_ledger_path") or _DEFAULTS["catalog_ledger_path"]
-            ).expanduser(),
+            database_url=values.get("catalog_database_url") or _DEFAULTS["catalog_database_url"],
         )

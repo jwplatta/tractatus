@@ -8,6 +8,7 @@ from pyiceberg.schema import Schema
 from pyiceberg.table import Table
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import (
+    BooleanType,
     DoubleType,
     LongType,
     NestedField,
@@ -51,6 +52,19 @@ OPTIONS_SCHEMA = Schema(
     NestedField(field_id=29, name="extrinsic_value", field_type=DoubleType(), required=False),
     NestedField(field_id=30, name="underlying_price", field_type=DoubleType(), required=False),
     NestedField(field_id=31, name="sampled_at", field_type=TimestamptzType(), required=False),
+    # Timing fields
+    NestedField(field_id=32, name="trade_time", field_type=TimestamptzType(), required=False),
+    NestedField(field_id=33, name="quote_time", field_type=TimestamptzType(), required=False),
+    # Value and change fields
+    NestedField(field_id=34, name="time_value", field_type=DoubleType(), required=False),
+    NestedField(field_id=35, name="net_change", field_type=DoubleType(), required=False),
+    NestedField(field_id=36, name="percent_change", field_type=DoubleType(), required=False),
+    # Contract classification fields
+    NestedField(field_id=37, name="settlement_type", field_type=StringType(), required=False),
+    NestedField(field_id=38, name="exercise_type", field_type=StringType(), required=False),
+    NestedField(field_id=39, name="expiration_type", field_type=StringType(), required=False),
+    NestedField(field_id=40, name="multiplier", field_type=DoubleType(), required=False),
+    NestedField(field_id=41, name="non_standard", field_type=BooleanType(), required=False),
 )
 
 OPTIONS_PARTITION_SPEC = PartitionSpec(

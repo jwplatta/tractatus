@@ -223,11 +223,7 @@ def catalog_status() -> None:
     from tractatus.catalog import CatalogConfig, Ledger
 
     config = CatalogConfig.load()
-    if not config.ledger_path.exists():
-        typer.echo("No ledger found. Run 'tractatus catalog publish' first.")
-        raise typer.Exit(0)
-
-    ledger = Ledger(config.ledger_path)
+    ledger = Ledger(config.database_url)
     try:
         summary = ledger.summary()
     finally:

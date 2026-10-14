@@ -9,14 +9,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 ### Added
 
 - `tractatus.catalog` module for publishing compacted options Parquet files to an Apache Iceberg lakehouse (AWS Glue catalog + S3).
-  - `CatalogConfig` for Iceberg bucket, Glue database/table, data root, and ledger path configuration via environment variables.
-  - `Ledger` — SQLite-backed publication ledger tracking file discovery, upload, and commit status with idempotent resume-after-failure.
+  - `CatalogConfig` for Iceberg bucket, Glue database/table, data root, and PostgreSQL connection configuration via environment variables.
+  - `Ledger` — PostgreSQL-backed publication ledger tracking file discovery, upload, and commit status with idempotent resume-after-failure. Creates the `catalog_files` table automatically on first connection.
   - `discover_files()` — scans configurable options data root for compacted parquet files, computing SHA-256 content identity.
   - `Publisher` — orchestrates discover → S3 upload → Iceberg `add_files()` commit pipeline with error handling and dry-run mode.
-  - `CatalogReader` — unified DuckDB reader querying local parquet first, falling back to Iceberg table via DuckDB's iceberg extension.
-  - Iceberg table schema definition matching the existing options parquet format (29 columns, partitioned by expiration_date).
+  - Iceberg table schema definition for options data (41 fields including contract classification, timing, and value columns, partitioned by expiration_date).
 - CLI commands: `tractatus catalog publish` and `tractatus catalog status`.
-- `pyiceberg[glue,s3fs]` added as a core dependency.
+- `pyiceberg[glue,s3fs]` and `psycopg[binary]` added as core dependencies.
 
 ## [0.2.0] - 2026-09-19
 

@@ -32,7 +32,7 @@ class Publisher:
 
     def __init__(self, config: CatalogConfig) -> None:
         self._config = config
-        self._ledger = Ledger(config.ledger_path)
+        self._ledger = Ledger(config.database_url)
 
     def close(self) -> None:
         self._ledger.close()
