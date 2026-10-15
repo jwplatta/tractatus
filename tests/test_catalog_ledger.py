@@ -371,6 +371,104 @@ def test_delete_filtered_combined(ledger: Ledger) -> None:
     assert ledger.get("c.parquet", "options") is not None
 
 
+def test_pending_upload_filtered_by_date(ledger: Ledger) -> None:
+    ledger.record_discovered(
+        "oct.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-10-15",
+    )
+    ledger.record_discovered(
+        "dec.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-12-15",
+    )
+
+    result = ledger.pending_upload("options", after="2026-10-01", before="2026-11-01")
+    assert [r.path for r in result] == ["oct.parquet"]
+
+
+def test_pending_upload_filtered_by_provider(ledger: Ledger) -> None:
+    ledger.record_discovered(
+        "a.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-10-15",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="tradier",
+        root="SPX",
+        sample_date="2026-10-15",
+    )
+
+    result = ledger.pending_upload("options", providers=["schwab"])
+    assert [r.path for r in result] == ["a.parquet"]
+
+
+def test_pending_commit_filtered(ledger: Ledger) -> None:
+    ledger.record_discovered(
+        "oct.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-10-15",
+    )
+    ledger.record_discovered(
+        "dec.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-12-15",
+    )
+    ledger.mark_uploaded("oct.parquet", "options", "s3/oct")
+    ledger.mark_uploaded("dec.parquet", "options", "s3/dec")
+
+    result = ledger.pending_commit("options", after="2026-12-01")
+    assert [r.path for r in result] == ["dec.parquet"]
+
+
+def test_pending_upload_no_filters_returns_all(ledger: Ledger) -> None:
+    ledger.record_discovered(
+        "a.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-10-15",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="tradier",
+        root="SPX",
+        sample_date="2026-12-15",
+    )
+
+    result = ledger.pending_upload("options")
+    assert len(result) == 2
+
+
 def test_get_s3_keys_filtered(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.parquet",

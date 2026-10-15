@@ -245,6 +245,42 @@ def catalog_publish(
         typer.echo(detail)
 
 
+@catalog_app.command("discover")
+def catalog_discover(
+    table: Annotated[str, typer.Option("--table", help="Iceberg table to discover.")] = "options",
+    provider: Annotated[
+        list[str] | None, typer.Option("--provider", help="Limit to specific providers.")
+    ] = None,
+    after: Annotated[
+        str | None, typer.Option("--after", help="Only include sample_date >= DATE (YYYY-MM-DD).")
+    ] = None,
+    before: Annotated[
+        str | None, typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD).")
+    ] = None,
+) -> None:
+    """Discover parquet files and add them to the ledger without uploading or committing."""
+    setup_logging("catalog", verbose=True)
+
+    parsed_after = date.fromisoformat(after) if after else None
+    parsed_before = date.fromisoformat(before) if before else None
+
+    config = CatalogConfig.load()
+    publisher = Publisher(config)
+    try:
+        result = publisher.run(
+            table_name=table,
+            dry_run=True,
+            providers=provider,
+            after=parsed_after,
+            before=parsed_before,
+        )
+    finally:
+        publisher.close()
+
+    typer.echo(f"Table:      {table}")
+    typer.echo(f"Discovered: {result.discovered}")
+
+
 @catalog_app.command("status")
 def catalog_status(
     table: Annotated[
