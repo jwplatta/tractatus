@@ -11,12 +11,14 @@ from tractatus.config import TractatusConfig
 _DEFAULTS: dict[str, str] = {
     "glue_database": "tractatus",
     "catalog_database_url": str(Path.home() / ".tractatus" / "catalog_ledger.db"),
+    "s3_storage_class": "GLACIER_IR",
 }
 
 _ENV_NAMES: dict[str, str] = {
     "iceberg_bucket": "ICEBERG_BUCKET",
     "glue_database": "GLUE_DATABASE",
     "catalog_database_url": "CATALOG_DATABASE_URL",
+    "s3_storage_class": "S3_STORAGE_CLASS",
 }
 
 
@@ -31,6 +33,7 @@ class CatalogConfig:
     aws_profile: str | None
     data_root: Path
     database_url: str
+    s3_storage_class: str
 
     @classmethod
     def load(cls, tractatus_config: TractatusConfig | None = None) -> CatalogConfig:
@@ -58,4 +61,5 @@ class CatalogConfig:
             aws_profile=tc.aws_profile,
             data_root=tc.tickrake_data_dir,
             database_url=values.get("catalog_database_url") or _DEFAULTS["catalog_database_url"],
+            s3_storage_class=values.get("s3_storage_class") or _DEFAULTS["s3_storage_class"],
         )

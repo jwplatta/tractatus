@@ -21,6 +21,7 @@ def _make_config(tmp_path: Path) -> CatalogConfig:
         aws_profile=None,
         data_root=data_root,
         database_url=str(tmp_path / "ledger.db"),
+        s3_storage_class="STANDARD",
     )
 
 

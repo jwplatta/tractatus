@@ -179,7 +179,7 @@ class Publisher:
                         str(local_path),
                         self._config.iceberg_bucket,
                         s3_key,
-                        ExtraArgs={"StorageClass": "GLACIER_IR"},
+                        ExtraArgs={"StorageClass": self._config.s3_storage_class},
                     )
                     uploaded_bytes += record.size_bytes
                     logger.info(
