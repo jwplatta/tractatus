@@ -203,13 +203,29 @@ class Ledger:
             (error, now, path, table_name),
         )
 
-    def pending_upload(self, table_name: str) -> list[FileRecord]:
+    def pending_upload(
+        self,
+        table_name: str,
+        after: str | None = None,
+        before: str | None = None,
+        providers: list[str] | None = None,
+    ) -> list[FileRecord]:
         """Return files with status=discovered for the given table."""
-        return self._query_status("discovered", table_name)
+        return self._query_status(
+            "discovered", table_name, after=after, before=before, providers=providers
+        )
 
-    def pending_commit(self, table_name: str) -> list[FileRecord]:
+    def pending_commit(
+        self,
+        table_name: str,
+        after: str | None = None,
+        before: str | None = None,
+        providers: list[str] | None = None,
+    ) -> list[FileRecord]:
         """Return files with status=uploaded for the given table."""
-        return self._query_status("uploaded", table_name)
+        return self._query_status(
+            "uploaded", table_name, after=after, before=before, providers=providers
+        )
 
     def summary(self, table_name: str | None = None) -> dict[str, int]:
         """Return counts by status, optionally filtered by table."""
@@ -284,10 +300,34 @@ class Ledger:
         rows = self._fetchall(f"SELECT s3_key FROM catalog_files {where}", tuple(params))
         return [row[0] for row in rows]
 
-    def _query_status(self, status: str, table_name: str) -> list[FileRecord]:
+    def _query_status(
+        self,
+        status: str,
+        table_name: str,
+        after: str | None = None,
+        before: str | None = None,
+        providers: list[str] | None = None,
+    ) -> list[FileRecord]:
+        where = "WHERE status = %s AND table_name = %s"
+        params: list[Any] = [status, table_name]
+
+        if after:
+            where += " AND sample_date >= %s"
+            params.append(after)
+        if before:
+            where += " AND sample_date < %s"
+            params.append(before)
+        if providers:
+            if self._is_pg:
+                where += " AND provider = ANY(%s)"
+                params.append(providers)
+            else:
+                placeholders = ",".join("%s" for _ in providers)
+                where += f" AND provider IN ({placeholders})"
+                params.extend(providers)
+
         rows = self._fetchall(
-            f"SELECT {_COLUMNS} FROM catalog_files "
-            f"WHERE status = %s AND table_name = %s ORDER BY path",
-            (status, table_name),
+            f"SELECT {_COLUMNS} FROM catalog_files {where} ORDER BY path",
+            tuple(params),
         )
         return [FileRecord(*row) for row in rows]

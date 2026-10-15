@@ -143,6 +143,92 @@ def test_unknown_table_raises(tmp_path: Path) -> None:
         publisher.close()
 
 
+@patch("tractatus.catalog.publisher.load_catalog")
+@patch("tractatus.catalog.publisher.boto3.Session")
+def test_bounded_publish_leaves_out_of_scope_rows(
+    mock_session_cls: MagicMock, mock_load_catalog: MagicMock, tmp_path: Path
+) -> None:
+    """A date-bounded publish must not upload or commit out-of-scope pending rows."""
+    config = _make_config(tmp_path)
+    # Create October and December files
+    _create_parquet(config.data_root, "options", "schwab", date(2026, 10, 15), "SPX")
+    _create_parquet(config.data_root, "options", "schwab", date(2026, 12, 15), "SPX")
+
+    # First: discover all files (unbounded)
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+    publisher.close()
+
+    # Verify both are pending
+    ledger = Ledger(config.database_url)
+    assert len(ledger.pending_upload("options")) == 2
+    ledger.close()
+
+    # Now run a December-bounded publish — should only touch December
+    mock_s3 = MagicMock()
+    mock_s3.head_object.side_effect = Exception("Not found")
+    mock_session_cls.return_value.client.return_value = mock_s3
+
+    mock_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    result = publisher.run(table_name="options", after=date(2026, 12, 1), before=date(2027, 1, 1))
+    publisher.close()
+
+    # December file discovered=0 (already in ledger), uploaded=1, committed=1
+    assert result.uploaded == 1
+    assert result.committed == 1
+
+    # October row should still be pending (discovered, not uploaded)
+    ledger = Ledger(config.database_url)
+    oct_record = ledger.get("schwab/2026/10/15/SPX_samples_2026-10-15.parquet", "options")
+    assert oct_record is not None
+    assert oct_record.status == "discovered"
+    ledger.close()
+
+
+@patch("tractatus.catalog.publisher.load_catalog")
+@patch("tractatus.catalog.publisher.boto3.Session")
+def test_bounded_publish_provider_filter(
+    mock_session_cls: MagicMock, mock_load_catalog: MagicMock, tmp_path: Path
+) -> None:
+    """A provider-bounded publish must not upload out-of-scope provider rows."""
+    config = _make_config(tmp_path)
+    _create_parquet(config.data_root, "options", "schwab", date(2026, 10, 15), "SPX")
+    _create_parquet(config.data_root, "options", "tradier", date(2026, 10, 15), "SPX")
+
+    # Discover all files
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+    publisher.close()
+
+    mock_s3 = MagicMock()
+    mock_s3.head_object.side_effect = Exception("Not found")
+    mock_session_cls.return_value.client.return_value = mock_s3
+
+    mock_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    result = publisher.run(table_name="options", providers=["schwab"])
+    publisher.close()
+
+    assert result.uploaded == 1
+    assert result.committed == 1
+
+    # Tradier row should still be pending
+    ledger = Ledger(config.database_url)
+    tradier_record = ledger.get("tradier/2026/10/15/SPX_samples_2026-10-15.parquet", "options")
+    assert tradier_record is not None
+    assert tradier_record.status == "discovered"
+    ledger.close()
+
+
 def test_resume_after_upload_failure(tmp_path: Path) -> None:
     """Files that failed upload can be retried on next run."""
     config = _make_config(tmp_path)

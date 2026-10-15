@@ -76,10 +76,17 @@ class Publisher:
             result.details.append("Dry run — skipping upload and commit.")
             return result
 
-        result.uploaded, result.skipped, upload_errors = self._upload(table_name, limit=limit)
+        after_str = after.isoformat() if after else None
+        before_str = before.isoformat() if before else None
+
+        result.uploaded, result.skipped, upload_errors = self._upload(
+            table_name, limit=limit, after=after_str, before=before_str, providers=providers
+        )
         result.errors += upload_errors
 
-        committed, commit_errors = self._commit(table_name, limit=limit)
+        committed, commit_errors = self._commit(
+            table_name, limit=limit, after=after_str, before=before_str, providers=providers
+        )
         result.committed = committed
         result.errors += commit_errors
 
@@ -129,9 +136,18 @@ class Publisher:
         )
         return len(files)
 
-    def _upload(self, table_name: str, limit: int | None = None) -> tuple[int, int, int]:
+    def _upload(
+        self,
+        table_name: str,
+        limit: int | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        providers: list[str] | None = None,
+    ) -> tuple[int, int, int]:
         """Upload pending files to S3. Returns (uploaded, skipped, errors)."""
-        pending = self._ledger.pending_upload(table_name)
+        pending = self._ledger.pending_upload(
+            table_name, after=after, before=before, providers=providers
+        )
         if limit is not None:
             pending = pending[:limit]
         if not pending:
@@ -221,9 +237,18 @@ class Publisher:
         )
         return uploaded, skipped, errors
 
-    def _commit(self, table_name: str, limit: int | None = None) -> tuple[int, int]:
+    def _commit(
+        self,
+        table_name: str,
+        limit: int | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        providers: list[str] | None = None,
+    ) -> tuple[int, int]:
         """Commit uploaded files to Iceberg. Returns (committed_count, error_count)."""
-        pending = self._ledger.pending_commit(table_name)
+        pending = self._ledger.pending_commit(
+            table_name, after=after, before=before, providers=providers
+        )
         if limit is not None:
             pending = pending[:limit]
         if not pending:
