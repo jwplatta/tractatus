@@ -11,9 +11,14 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated
 
+import boto3
 import typer
+from pyiceberg.catalog import load_catalog
 
+from tractatus.catalog import CatalogConfig, Ledger, Publisher
+from tractatus.catalog.discovery import _parse_parquet_path
 from tractatus.config import TractatusConfig, config_template, default_config_path
+from tractatus.logging import setup_logging
 from tractatus.tickrake import TickrakeClient
 
 app = typer.Typer(no_args_is_help=True, help="Tractatus research tools.")
@@ -211,9 +216,6 @@ def catalog_publish(
     ] = None,
 ) -> None:
     """Discover, upload, and commit parquet files to an Iceberg table."""
-    from tractatus.catalog import CatalogConfig, Publisher
-    from tractatus.logging import setup_logging
-
     setup_logging("catalog", verbose=True)
 
     parsed_after = date.fromisoformat(after) if after else None
@@ -249,8 +251,6 @@ def catalog_status(
     ] = None,
 ) -> None:
     """Show publication ledger summary."""
-    from tractatus.catalog import CatalogConfig, Ledger
-
     config = CatalogConfig.load()
     ledger = Ledger(config.database_url)
     try:
@@ -279,11 +279,6 @@ def catalog_sync_ledger(
     postgres) from an existing Iceberg table so the publisher doesn't
     try to re-publish files that are already committed.
     """
-    from pyiceberg.catalog import load_catalog
-
-    from tractatus.catalog import CatalogConfig, Ledger
-    from tractatus.catalog.discovery import _parse_parquet_path
-
     config = CatalogConfig.load()
 
     props: dict[str, str] = {
@@ -391,8 +386,6 @@ def catalog_reset(
     Use --after/--before/--provider for partial resets. Without filters,
     resets everything for the table.
     """
-    from tractatus.catalog import CatalogConfig, Ledger
-
     is_filtered = any([after, before, provider])
 
     if drop_iceberg and is_filtered:
@@ -425,8 +418,6 @@ def catalog_reset(
             session_kwargs: dict[str, str] = {"region_name": config.aws_region}
             if config.aws_profile:
                 session_kwargs["profile_name"] = config.aws_profile
-            import boto3
-
             s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
 
             if is_filtered:
@@ -457,8 +448,6 @@ def catalog_reset(
                 typer.echo(f"Deleted {deleted} S3 objects.")
 
         if drop_iceberg:
-            from pyiceberg.catalog import load_catalog
-
             props: dict[str, str] = {
                 "type": "glue",
                 "glue.region": config.aws_region,
