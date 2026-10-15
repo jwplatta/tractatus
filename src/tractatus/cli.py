@@ -267,6 +267,108 @@ def catalog_status(
         typer.echo(f"  {status}: {count}")
 
 
+@catalog_app.command("sync-ledger")
+def catalog_sync_ledger(
+    table: Annotated[str, typer.Option("--table", help="Iceberg table to sync.")],
+) -> None:
+    """Sync the ledger with files already committed in the Iceberg table.
+
+    Scans the Iceberg table for registered data files and records them
+    as 'committed' in the ledger. Use this to seed a new ledger (e.g.
+    postgres) from an existing Iceberg table so the publisher doesn't
+    try to re-publish files that are already committed.
+    """
+    from pyiceberg.catalog import load_catalog
+
+    from tractatus.catalog import CatalogConfig, Ledger
+    from tractatus.catalog.discovery import _parse_parquet_path
+
+    config = CatalogConfig.load()
+
+    props: dict[str, str] = {
+        "type": "glue",
+        "glue.region": config.aws_region,
+        "s3.region": config.aws_region,
+        "warehouse": config.iceberg_warehouse,
+    }
+    if config.aws_profile:
+        props["glue.profile-name"] = config.aws_profile
+        props["s3.profile-name"] = config.aws_profile
+
+    catalog = load_catalog("glue", **props)
+    full_name = f"{config.glue_database}.{table}"
+
+    try:
+        iceberg_table = catalog.load_table(full_name)
+    except Exception:
+        typer.echo(f"Iceberg table {full_name} not found.", err=True)
+        raise typer.Exit(1) from None
+
+    # Extract S3 paths from the Iceberg table
+    prefix = f"s3://{config.iceberg_bucket}/{config.glue_database}/{table}/"
+    tasks = iceberg_table.scan().plan_files()
+    synced = 0
+    skipped = 0
+
+    ledger = Ledger(config.database_url)
+    try:
+        for task in tasks:
+            s3_path = task.file.file_path
+            if not s3_path.startswith(prefix):
+                skipped += 1
+                continue
+
+            relative_path = s3_path[len(prefix) :]
+            s3_key = f"{config.glue_database}/{table}/{relative_path}"
+
+            # Parse provider/root/sample_date from the relative path
+            from pathlib import Path
+
+            parsed = _parse_parquet_path(Path(relative_path), Path("."))
+            if parsed is None:
+                # Try parsing with just the filename parts
+                parts = relative_path.split("/")
+                if len(parts) >= 5:
+                    provider = parts[0]
+                    import re
+
+                    match = re.match(r"^(.+)_samples_(\d{4}-\d{2}-\d{2})\.parquet$", parts[-1])
+                    if match:
+                        root = match.group(1)
+                        sample_date = match.group(2)
+                    else:
+                        skipped += 1
+                        continue
+                else:
+                    skipped += 1
+                    continue
+            else:
+                provider, root, sample_date_obj = parsed
+                sample_date = sample_date_obj.isoformat()
+
+            existing = ledger.get(relative_path, table)
+            if existing and existing.status == "committed":
+                skipped += 1
+                continue
+
+            ledger.record_discovered(
+                path=relative_path,
+                table_name=table,
+                sha256="",
+                size_bytes=task.file.file_size_in_bytes,
+                provider=provider,
+                root=root,
+                sample_date=sample_date,
+            )
+            ledger.mark_uploaded(relative_path, table, s3_key)
+            ledger.mark_committed([relative_path], table)
+            synced += 1
+
+        typer.echo(f"Synced {synced} files as committed. Skipped {skipped}.")
+    finally:
+        ledger.close()
+
+
 @catalog_app.command("reset")
 def catalog_reset(
     table: Annotated[str, typer.Option("--table", help="Iceberg table to reset.")],
