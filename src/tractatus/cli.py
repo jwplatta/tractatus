@@ -392,6 +392,12 @@ def catalog_reset(
         typer.echo("Cannot use --drop-iceberg with date/provider filters.", err=True)
         raise typer.Exit(1)
 
+    is_filtered = any([after, before, provider])
+
+    if drop_iceberg and is_filtered:
+        typer.echo("Cannot use --drop-iceberg with date/provider filters.", err=True)
+        raise typer.Exit(1)
+
     config = CatalogConfig.load()
     ledger = Ledger(config.database_url)
 
