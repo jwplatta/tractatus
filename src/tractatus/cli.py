@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import date
 from pathlib import Path
 from typing import Annotated
 
+import boto3
 import typer
+from pyiceberg.catalog import load_catalog
 
+from tractatus.catalog import CatalogConfig, Ledger, Publisher
+from tractatus.catalog.discovery import _parse_parquet_path
 from tractatus.config import TractatusConfig, config_template, default_config_path
+from tractatus.logging import setup_logging
 from tractatus.tickrake import TickrakeClient
 
 app = typer.Typer(no_args_is_help=True, help="Tractatus research tools.")
@@ -157,7 +163,7 @@ def notebook() -> None:
 @app.command()
 def verify() -> None:
     """Validate project configuration and run the packaged smoke backtest."""
-    import mlflow  # type: ignore[import-not-found]
+    import mlflow  # type: ignore[import-not-found]  # noqa: PLC0415
 
     root = Path.cwd()
     if not (root / "research" / "smoke_backtest.py").exists():
@@ -173,8 +179,8 @@ def verify() -> None:
             "Packaged smoke dataset is unavailable from the configured Tickrake archive", err=True
         )
         raise typer.Exit(1)
-    import pandas as pd
-    from research.smoke_backtest import run  # type: ignore[import-not-found]
+    import pandas as pd  # noqa: PLC0415
+    from research.smoke_backtest import run  # type: ignore[import-not-found]  # noqa: PLC0415
 
     metrics = run(pd.read_parquet(parquet))
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
@@ -210,9 +216,6 @@ def catalog_publish(
     ] = None,
 ) -> None:
     """Discover, upload, and commit parquet files to an Iceberg table."""
-    from tractatus.catalog import CatalogConfig, Publisher
-    from tractatus.logging import setup_logging
-
     setup_logging("catalog", verbose=True)
 
     parsed_after = date.fromisoformat(after) if after else None
@@ -248,8 +251,6 @@ def catalog_status(
     ] = None,
 ) -> None:
     """Show publication ledger summary."""
-    from tractatus.catalog import CatalogConfig, Ledger
-
     config = CatalogConfig.load()
     ledger = Ledger(config.database_url)
     try:
@@ -267,6 +268,99 @@ def catalog_status(
         typer.echo(f"  {status}: {count}")
 
 
+@catalog_app.command("sync-ledger")
+def catalog_sync_ledger(
+    table: Annotated[str, typer.Option("--table", help="Iceberg table to sync.")],
+) -> None:
+    """Sync the ledger with files already committed in the Iceberg table.
+
+    Scans the Iceberg table for registered data files and records them
+    as 'committed' in the ledger. Use this to seed a new ledger (e.g.
+    postgres) from an existing Iceberg table so the publisher doesn't
+    try to re-publish files that are already committed.
+    """
+    config = CatalogConfig.load()
+
+    props: dict[str, str] = {
+        "type": "glue",
+        "glue.region": config.aws_region,
+        "s3.region": config.aws_region,
+        "warehouse": config.iceberg_warehouse,
+    }
+    if config.aws_profile:
+        props["glue.profile-name"] = config.aws_profile
+        props["s3.profile-name"] = config.aws_profile
+
+    catalog = load_catalog("glue", **props)
+    full_name = f"{config.glue_database}.{table}"
+
+    try:
+        iceberg_table = catalog.load_table(full_name)
+    except Exception:
+        typer.echo(f"Iceberg table {full_name} not found.", err=True)
+        raise typer.Exit(1) from None
+
+    # Extract S3 paths from the Iceberg table
+    prefix = f"s3://{config.iceberg_bucket}/{config.glue_database}/{table}/"
+    tasks = iceberg_table.scan().plan_files()
+    synced = 0
+    skipped = 0
+
+    ledger = Ledger(config.database_url)
+    try:
+        for task in tasks:
+            s3_path = task.file.file_path
+            if not s3_path.startswith(prefix):
+                skipped += 1
+                continue
+
+            relative_path = s3_path[len(prefix) :]
+            s3_key = f"{config.glue_database}/{table}/{relative_path}"
+
+            # Parse provider/root/sample_date from the relative path
+            parsed = _parse_parquet_path(Path(relative_path), Path("."))
+            if parsed is None:
+                # Try parsing with just the filename parts
+                parts = relative_path.split("/")
+                if len(parts) >= 5:
+                    provider = parts[0]
+                    match = re.match(r"^(.+)_samples_(\d{4}-\d{2}-\d{2})\.parquet$", parts[-1])
+                    if match:
+                        root = match.group(1)
+                        sample_date = match.group(2)
+                    else:
+                        skipped += 1
+                        continue
+                else:
+                    skipped += 1
+                    continue
+            else:
+                provider, root, sample_date_obj = parsed
+                sample_date = sample_date_obj.isoformat()
+
+            existing = ledger.get(relative_path, table)
+            if existing and existing.status == "committed":
+                skipped += 1
+                continue
+
+            ledger.record_discovered(
+                path=relative_path,
+                table_name=table,
+                sha256="",
+                size_bytes=task.file.file_size_in_bytes,
+                provider=provider,
+                root=root,
+                sample_date=sample_date,
+            )
+            ledger.mark_uploaded(relative_path, table, s3_key)
+            ledger.mark_committed([relative_path], table)
+            synced += 1
+
+        typer.echo(f"Synced {synced} files as committed. Skipped {skipped}.")
+    finally:
+        ledger.close()
+
+
 @catalog_app.command("reset")
 def catalog_reset(
     table: Annotated[str, typer.Option("--table", help="Iceberg table to reset.")],
@@ -276,54 +370,84 @@ def catalog_reset(
     drop_iceberg: Annotated[
         bool, typer.Option("--drop-iceberg", help="Also drop the Iceberg table from Glue.")
     ] = False,
+    after: Annotated[
+        str | None, typer.Option("--after", help="Only reset sample_date >= DATE (YYYY-MM-DD).")
+    ] = None,
+    before: Annotated[
+        str | None, typer.Option("--before", help="Only reset sample_date < DATE (YYYY-MM-DD).")
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Only reset a specific provider.")
+    ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Reset the ledger and optionally clean up S3/Iceberg for a table.
 
-    Use this during development to wipe a table and re-publish from scratch.
+    Use --after/--before/--provider for partial resets. Without filters,
+    resets everything for the table.
     """
-    from tractatus.catalog import CatalogConfig, Ledger
+    is_filtered = any([after, before, provider])
+
+    if drop_iceberg and is_filtered:
+        typer.echo("Cannot use --drop-iceberg with date/provider filters.", err=True)
+        raise typer.Exit(1)
 
     config = CatalogConfig.load()
     ledger = Ledger(config.database_url)
 
     try:
-        summary = ledger.summary(table_name=table)
-        total = sum(summary.values()) if summary else 0
-        parts = [f"{total} ledger records"]
+        filter_desc = []
+        if after:
+            filter_desc.append(f"after={after}")
+        if before:
+            filter_desc.append(f"before={before}")
+        if provider:
+            filter_desc.append(f"provider={provider}")
+        scope = f" ({', '.join(filter_desc)})" if filter_desc else ""
+
+        parts = ["ledger records"]
         if delete_s3:
             parts.append("S3 data")
         if drop_iceberg:
             parts.append("Iceberg table")
-        msg = f"This will delete {', '.join(parts)} for table {table!r}. Continue?"
+        msg = f"This will delete {', '.join(parts)} for table {table!r}{scope}. Continue?"
         if not yes and not typer.confirm(msg, default=False):
             raise typer.Abort()
 
         if delete_s3:
-            # Delete all S3 objects under the table's data prefix
             session_kwargs: dict[str, str] = {"region_name": config.aws_region}
             if config.aws_profile:
                 session_kwargs["profile_name"] = config.aws_profile
-            import boto3
-
             s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
-            prefix = f"{config.glue_database}/{table}/"
-            typer.echo(f"Deleting s3://{config.iceberg_bucket}/{prefix}*")
-            paginator = s3.get_paginator("list_objects_v2")
-            deleted = 0
-            for page in paginator.paginate(Bucket=config.iceberg_bucket, Prefix=prefix):
-                objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-                if objects:
+
+            if is_filtered:
+                s3_keys = ledger.get_s3_keys(table, after=after, before=before, provider=provider)
+                deleted = 0
+                # Delete in batches of 1000 (S3 limit)
+                for i in range(0, len(s3_keys), 1000):
+                    batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
                     s3.delete_objects(
                         Bucket=config.iceberg_bucket,
-                        Delete={"Objects": objects},  # type: ignore[typeddict-item]
+                        Delete={"Objects": batch},  # type: ignore[typeddict-item]
                     )
-                    deleted += len(objects)
-            typer.echo(f"Deleted {deleted} S3 objects.")
+                    deleted += len(batch)
+                typer.echo(f"Deleted {deleted} S3 objects.")
+            else:
+                prefix = f"{config.glue_database}/{table}/"
+                typer.echo(f"Deleting s3://{config.iceberg_bucket}/{prefix}*")
+                paginator = s3.get_paginator("list_objects_v2")
+                deleted = 0
+                for page in paginator.paginate(Bucket=config.iceberg_bucket, Prefix=prefix):
+                    objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                    if objects:
+                        s3.delete_objects(
+                            Bucket=config.iceberg_bucket,
+                            Delete={"Objects": objects},  # type: ignore[typeddict-item]
+                        )
+                        deleted += len(objects)
+                typer.echo(f"Deleted {deleted} S3 objects.")
 
         if drop_iceberg:
-            from pyiceberg.catalog import load_catalog
-
             props: dict[str, str] = {
                 "type": "glue",
                 "glue.region": config.aws_region,
@@ -341,7 +465,7 @@ def catalog_reset(
             except Exception:
                 typer.echo(f"Iceberg table {full_name} not found, skipping.")
 
-        count = ledger.delete_all(table)
-        typer.echo(f"Deleted {count} ledger records for table {table!r}.")
+        count = ledger.delete_filtered(table, after=after, before=before, provider=provider)
+        typer.echo(f"Deleted {count} ledger records for table {table!r}{scope}.")
     finally:
         ledger.close()

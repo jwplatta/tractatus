@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 from tractatus.tickrake.options.archive import ArchiveClient
 from tractatus.tickrake.options.filesystem import FilesystemClient, parse_snapshot_filename
@@ -47,8 +48,6 @@ def test_scan_snapshots_empty_date(cfg, options_dir):
 
 
 def test_parse_snapshot_filename(tmp_path):
-    from pathlib import Path
-
     p = Path("SPY_exp2026-01-10_2026-01-05_14-30-00.csv")
     result = parse_snapshot_filename(p)
     assert result is not None
@@ -59,8 +58,6 @@ def test_parse_snapshot_filename(tmp_path):
 
 
 def test_parse_snapshot_filename_invalid():
-    from pathlib import Path
-
     assert parse_snapshot_filename(Path("bad_file.csv")) is None
 
 
