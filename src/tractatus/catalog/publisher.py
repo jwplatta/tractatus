@@ -175,7 +175,12 @@ class Publisher:
                     )
                     skipped += 1
                 else:
-                    s3.upload_file(str(local_path), self._config.iceberg_bucket, s3_key)
+                    s3.upload_file(
+                        str(local_path),
+                        self._config.iceberg_bucket,
+                        s3_key,
+                        ExtraArgs={"StorageClass": self._config.s3_storage_class},
+                    )
                     uploaded_bytes += record.size_bytes
                     logger.info(
                         {
