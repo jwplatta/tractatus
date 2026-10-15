@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import date
@@ -322,16 +323,12 @@ def catalog_sync_ledger(
             s3_key = f"{config.glue_database}/{table}/{relative_path}"
 
             # Parse provider/root/sample_date from the relative path
-            from pathlib import Path
-
             parsed = _parse_parquet_path(Path(relative_path), Path("."))
             if parsed is None:
                 # Try parsing with just the filename parts
                 parts = relative_path.split("/")
                 if len(parts) >= 5:
                     provider = parts[0]
-                    import re
-
                     match = re.match(r"^(.+)_samples_(\d{4}-\d{2}-\d{2})\.parquet$", parts[-1])
                     if match:
                         root = match.group(1)
