@@ -9,4 +9,5 @@ RUN uv sync --no-dev --frozen
 
 COPY src/ src/
 
-ENTRYPOINT ["uv", "run", "tractatus", "catalog", "publish"]
+ENTRYPOINT ["uv", "run", "tractatus", "catalog"]
+CMD ["publish"]
