@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -15,7 +16,7 @@ from tractatus.catalog.discovery import discover_files
 from tractatus.catalog.ledger import FileRecord, Ledger
 from tractatus.catalog.schema import TABLE_DEFS, ensure_table
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("tractatus.catalog")
 
 
 @dataclass
@@ -25,6 +26,7 @@ class PublishResult:
     discovered: int = 0
     uploaded: int = 0
     committed: int = 0
+    skipped: int = 0
     errors: int = 0
     details: list[str] = field(default_factory=list)
 
@@ -54,19 +56,46 @@ class Publisher:
                 f"Unknown table {table_name!r}. Registered tables: {', '.join(sorted(TABLE_DEFS))}"
             )
 
+        run_start = time.monotonic()
         result = PublishResult()
+
+        logger.info(
+            {
+                "event": "run_started",
+                "table": table_name,
+                "dry_run": dry_run,
+                "limit": limit,
+                "after": after,
+                "before": before,
+                "providers": providers,
+            }
+        )
 
         result.discovered = self._discover(table_name, providers, after=after, before=before)
         if dry_run:
             result.details.append("Dry run — skipping upload and commit.")
             return result
 
-        result.uploaded, upload_errors = self._upload(table_name, limit=limit)
+        result.uploaded, result.skipped, upload_errors = self._upload(table_name, limit=limit)
         result.errors += upload_errors
 
         committed, commit_errors = self._commit(table_name, limit=limit)
         result.committed = committed
         result.errors += commit_errors
+
+        duration_ms = int((time.monotonic() - run_start) * 1000)
+        logger.info(
+            {
+                "event": "run_completed",
+                "table": table_name,
+                "discovered": result.discovered,
+                "uploaded": result.uploaded,
+                "skipped": result.skipped,
+                "committed": result.committed,
+                "errors": result.errors,
+                "duration_ms": duration_ms,
+            }
+        )
 
         return result
 
@@ -90,21 +119,30 @@ class Publisher:
                 root=f.root,
                 sample_date=f.sample_date.isoformat(),
             )
-        logger.info("Discovered %d parquet files for table %s", len(files), table_name)
+        logger.info(
+            {
+                "event": "discovery_completed",
+                "table": table_name,
+                "file_count": len(files),
+                "total_bytes": sum(f.size_bytes for f in files),
+            }
+        )
         return len(files)
 
-    def _upload(self, table_name: str, limit: int | None = None) -> tuple[int, int]:
-        """Upload pending files to S3. Returns (uploaded_count, error_count)."""
+    def _upload(self, table_name: str, limit: int | None = None) -> tuple[int, int, int]:
+        """Upload pending files to S3. Returns (uploaded, skipped, errors)."""
         pending = self._ledger.pending_upload(table_name)
         if limit is not None:
             pending = pending[:limit]
         if not pending:
-            return 0, 0
+            return 0, 0, 0
 
         session = self._boto_session()
         s3 = session.client("s3")
         uploaded = 0
+        skipped = 0
         errors = 0
+        uploaded_bytes = 0
         table_dir = self._config.data_root / table_name
 
         for record in pending:
@@ -113,28 +151,70 @@ class Publisher:
 
             if not local_path.exists():
                 self._ledger.mark_error(record.path, table_name, "Local file not found")
+                logger.error(
+                    {
+                        "event": "upload_error",
+                        "table": table_name,
+                        "path": record.path,
+                        "error": "Local file not found",
+                    }
+                )
                 errors += 1
                 continue
 
             try:
                 if self._s3_key_exists(s3, s3_key):
-                    logger.info("Skipping %s — already exists in S3", s3_key)
+                    logger.info(
+                        {
+                            "event": "upload_skipped",
+                            "table": table_name,
+                            "path": record.path,
+                            "s3_key": s3_key,
+                            "reason": "already_exists",
+                        }
+                    )
+                    skipped += 1
                 else:
                     s3.upload_file(str(local_path), self._config.iceberg_bucket, s3_key)
+                    uploaded_bytes += record.size_bytes
                     logger.info(
-                        "Uploaded %s → s3://%s/%s",
-                        record.path,
-                        self._config.iceberg_bucket,
-                        s3_key,
+                        {
+                            "event": "file_uploaded",
+                            "table": table_name,
+                            "path": record.path,
+                            "s3_key": s3_key,
+                            "size_bytes": record.size_bytes,
+                            "provider": record.provider,
+                            "root": record.root,
+                            "sample_date": record.sample_date,
+                        }
                     )
+                    uploaded += 1
                 self._ledger.mark_uploaded(record.path, table_name, s3_key)
-                uploaded += 1
             except Exception as exc:
                 self._ledger.mark_error(record.path, table_name, str(exc))
+                logger.error(
+                    {
+                        "event": "upload_error",
+                        "table": table_name,
+                        "path": record.path,
+                        "error_class": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                )
                 errors += 1
-                logger.error("Upload failed for %s: %s", record.path, exc)
 
-        return uploaded, errors
+        logger.info(
+            {
+                "event": "upload_batch_completed",
+                "table": table_name,
+                "uploaded": uploaded,
+                "skipped": skipped,
+                "errors": errors,
+                "uploaded_bytes": uploaded_bytes,
+            }
+        )
+        return uploaded, skipped, errors
 
     def _commit(self, table_name: str, limit: int | None = None) -> tuple[int, int]:
         """Commit uploaded files to Iceberg. Returns (committed_count, error_count)."""
@@ -160,10 +240,24 @@ class Publisher:
             table.add_files(file_paths=s3_paths, check_duplicate_files=True)
             committed_paths = [r.path for r in pending if r.s3_key is not None]
             self._ledger.mark_committed(committed_paths, table_name)
-            logger.info("Committed %d files to Iceberg table %s", len(committed_paths), table_name)
+            logger.info(
+                {
+                    "event": "commit_completed",
+                    "table": table_name,
+                    "file_count": len(committed_paths),
+                }
+            )
             return len(committed_paths), 0
         except Exception as exc:
-            logger.error("Iceberg commit failed for %s: %s", table_name, exc)
+            logger.error(
+                {
+                    "event": "commit_error",
+                    "table": table_name,
+                    "file_count": len(s3_paths),
+                    "error_class": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+            )
             for record in pending:
                 self._ledger.mark_error(record.path, table_name, f"Commit failed: {exc}")
             return 0, len(pending)
