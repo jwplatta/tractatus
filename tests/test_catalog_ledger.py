@@ -267,3 +267,134 @@ def test_delete_all(ledger: Ledger) -> None:
     assert count == 1
     assert ledger.get("a.parquet", "options") is None
     assert ledger.get("b.parquet", "level_one") is not None
+
+
+def test_delete_filtered_by_date(ledger: Ledger) -> None:
+    ledger.record_discovered(
+        "a.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-15",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-02-15",
+    )
+    ledger.record_discovered(
+        "c.parquet",
+        table_name="options",
+        sha256="ccc",
+        size_bytes=300,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-03-15",
+    )
+
+    count = ledger.delete_filtered("options", after="2026-02-01", before="2026-03-01")
+    assert count == 1
+    assert ledger.get("a.parquet", "options") is not None
+    assert ledger.get("b.parquet", "options") is None
+    assert ledger.get("c.parquet", "options") is not None
+
+
+def test_delete_filtered_by_provider(ledger: Ledger) -> None:
+    ledger.record_discovered(
+        "a.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="tradier",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+
+    count = ledger.delete_filtered("options", provider="schwab")
+    assert count == 1
+    assert ledger.get("a.parquet", "options") is None
+    assert ledger.get("b.parquet", "options") is not None
+
+
+def test_delete_filtered_combined(ledger: Ledger) -> None:
+    """Combine date and provider filters."""
+    ledger.record_discovered(
+        "a.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2025-12-15",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-15",
+    )
+    ledger.record_discovered(
+        "c.parquet",
+        table_name="options",
+        sha256="ccc",
+        size_bytes=300,
+        provider="tradier",
+        root="SPX",
+        sample_date="2025-12-15",
+    )
+
+    # Only schwab in Dec 2025
+    count = ledger.delete_filtered(
+        "options", after="2025-12-01", before="2026-01-01", provider="schwab"
+    )
+    assert count == 1
+    assert ledger.get("a.parquet", "options") is None
+    assert ledger.get("b.parquet", "options") is not None
+    assert ledger.get("c.parquet", "options") is not None
+
+
+def test_get_s3_keys_filtered(ledger: Ledger) -> None:
+    ledger.record_discovered(
+        "a.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2025-12-15",
+    )
+    ledger.record_discovered(
+        "b.parquet",
+        table_name="options",
+        sha256="bbb",
+        size_bytes=200,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-15",
+    )
+    ledger.mark_uploaded("a.parquet", "options", "s3/a")
+    ledger.mark_uploaded("b.parquet", "options", "s3/b")
+
+    keys = ledger.get_s3_keys("options", after="2025-12-01", before="2026-01-01")
+    assert keys == ["s3/a"]
+
+    all_keys = ledger.get_s3_keys("options")
+    assert sorted(all_keys) == ["s3/a", "s3/b"]
