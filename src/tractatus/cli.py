@@ -387,12 +387,6 @@ def catalog_reset(
         typer.echo("Cannot use --drop-iceberg with date filters.", err=True)
         raise typer.Exit(1)
 
-    is_filtered = any([after, before, provider])
-
-    if drop_iceberg and is_filtered:
-        typer.echo("Cannot use --drop-iceberg with date/provider filters.", err=True)
-        raise typer.Exit(1)
-
     config = CatalogConfig.load()
     ledger = Ledger(config.database_url)
 
@@ -425,9 +419,7 @@ def catalog_reset(
         planned_files = list(scan.plan_files())
         file_paths = [task.file.file_path for task in planned_files]
 
-        ledger_count_rows = ledger._fetchall(
-            *_build_ledger_count_query(table, after, before)
-        )
+        ledger_count_rows = ledger._fetchall(*_build_ledger_count_query(table, after, before))
         ledger_count = ledger_count_rows[0][0] if ledger_count_rows else 0
 
         filter_desc = []
@@ -459,9 +451,7 @@ def catalog_reset(
             typer.echo("Deleted matching rows from Iceberg table.")
 
             # 2. Expire old snapshots so nothing references the dropped files
-            iceberg_table.maintenance.expire_snapshots().older_than(
-                datetime.now(UTC)
-            ).commit()
+            iceberg_table.maintenance.expire_snapshots().older_than(datetime.now(UTC)).commit()
             typer.echo("Expired old snapshots.")
 
             # 3. Delete the now-orphaned data files from S3
@@ -470,9 +460,7 @@ def catalog_reset(
                 session_kwargs["profile_name"] = config.aws_profile
             s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
 
-            s3_keys = [
-                fp.removeprefix(f"s3://{config.iceberg_bucket}/") for fp in file_paths
-            ]
+            s3_keys = [fp.removeprefix(f"s3://{config.iceberg_bucket}/") for fp in file_paths]
             for i in range(0, len(s3_keys), 1000):
                 batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
                 s3.delete_objects(
@@ -493,9 +481,7 @@ def catalog_reset(
         ledger.close()
 
 
-def _build_iceberg_filter(
-    after: str | None, before: str | None
-) -> str:
+def _build_iceberg_filter(after: str | None, before: str | None) -> str:
     """Build a PyIceberg filter expression string from date range parameters."""
 
     parts: list[str] = []
