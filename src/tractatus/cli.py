@@ -7,13 +7,14 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated
 
 import boto3
 import typer
 from pyiceberg.catalog import load_catalog
+from pyiceberg.expressions import AlwaysTrue
 
 from tractatus.catalog import CatalogConfig, Ledger, Publisher
 from tractatus.catalog.discovery import _parse_parquet_path
@@ -364,9 +365,6 @@ def catalog_sync_ledger(
 @catalog_app.command("reset")
 def catalog_reset(
     table: Annotated[str, typer.Option("--table", help="Iceberg table to reset.")],
-    delete_s3: Annotated[
-        bool, typer.Option("--delete-s3", help="Also delete uploaded files from S3.")
-    ] = False,
     drop_iceberg: Annotated[
         bool, typer.Option("--drop-iceberg", help="Also drop the Iceberg table from Glue.")
     ] = False,
@@ -376,20 +374,17 @@ def catalog_reset(
     before: Annotated[
         str | None, typer.Option("--before", help="Only reset sample_date < DATE (YYYY-MM-DD).")
     ] = None,
-    provider: Annotated[
-        str | None, typer.Option("--provider", help="Only reset a specific provider.")
-    ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
 ) -> None:
-    """Reset the ledger and optionally clean up S3/Iceberg for a table.
+    """Reset Iceberg data, S3 files, and ledger records for a table.
 
-    Use --after/--before/--provider for partial resets. Without filters,
+    Use --after/--before for partial resets scoped by date. Without filters,
     resets everything for the table.
     """
-    is_filtered = any([after, before, provider])
+    is_filtered = any([after, before])
 
     if drop_iceberg and is_filtered:
-        typer.echo("Cannot use --drop-iceberg with date/provider filters.", err=True)
+        typer.echo("Cannot use --drop-iceberg with date filters.", err=True)
         raise typer.Exit(1)
 
     is_filtered = any([after, before, provider])
@@ -402,76 +397,127 @@ def catalog_reset(
     ledger = Ledger(config.database_url)
 
     try:
+        # Build Iceberg catalog connection
+        props: dict[str, str] = {
+            "type": "glue",
+            "glue.region": config.aws_region,
+            "s3.region": config.aws_region,
+            "warehouse": config.iceberg_warehouse,
+        }
+        if config.aws_profile:
+            props["glue.profile-name"] = config.aws_profile
+            props["s3.profile-name"] = config.aws_profile
+
+        catalog = load_catalog("glue", **props)
+        full_name = f"{config.glue_database}.{table}"
+
+        try:
+            iceberg_table = catalog.load_table(full_name)
+        except Exception:
+            typer.echo(f"Iceberg table {full_name} not found.", err=True)
+            raise typer.Exit(1) from None
+
+        # Build Iceberg row filter from date range
+        iceberg_filter = _build_iceberg_filter(after, before)
+
+        # Preview: list files that will be affected
+        scan = iceberg_table.scan(row_filter=iceberg_filter)
+        planned_files = list(scan.plan_files())
+        file_paths = [task.file.file_path for task in planned_files]
+
+        ledger_count_rows = ledger._fetchall(
+            *_build_ledger_count_query(table, after, before)
+        )
+        ledger_count = ledger_count_rows[0][0] if ledger_count_rows else 0
+
         filter_desc = []
         if after:
             filter_desc.append(f"after={after}")
         if before:
             filter_desc.append(f"before={before}")
-        if provider:
-            filter_desc.append(f"provider={provider}")
         scope = f" ({', '.join(filter_desc)})" if filter_desc else ""
 
-        parts = ["ledger records"]
-        if delete_s3:
-            parts.append("S3 data")
+        typer.echo(f"\nTable: {table!r}{scope}")
+        typer.echo(f"  Iceberg data files to remove: {len(file_paths)}")
+        for fp in file_paths:
+            typer.echo(f"    {fp}")
+        typer.echo(f"  Ledger records to delete: {ledger_count}")
         if drop_iceberg:
-            parts.append("Iceberg table")
-        msg = f"This will delete {', '.join(parts)} for table {table!r}{scope}. Continue?"
-        if not yes and not typer.confirm(msg, default=False):
+            typer.echo(f"  Will drop Iceberg table: {full_name}")
+        typer.echo()
+
+        if not file_paths and not ledger_count:
+            typer.echo("Nothing to reset.")
+            raise typer.Exit(0)
+
+        if not yes and not typer.confirm("Proceed with reset?", default=False):
             raise typer.Abort()
 
-        if delete_s3:
+        # 1. Delete rows from Iceberg (rewrites metadata, leaves data files as orphans)
+        if file_paths:
+            iceberg_table.delete(delete_filter=iceberg_filter)
+            typer.echo("Deleted matching rows from Iceberg table.")
+
+            # 2. Expire old snapshots so nothing references the dropped files
+            iceberg_table.maintenance.expire_snapshots().older_than(
+                datetime.now(UTC)
+            ).commit()
+            typer.echo("Expired old snapshots.")
+
+            # 3. Delete the now-orphaned data files from S3
             session_kwargs: dict[str, str] = {"region_name": config.aws_region}
             if config.aws_profile:
                 session_kwargs["profile_name"] = config.aws_profile
             s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
 
-            if is_filtered:
-                s3_keys = ledger.get_s3_keys(table, after=after, before=before, provider=provider)
-                deleted = 0
-                # Delete in batches of 1000 (S3 limit)
-                for i in range(0, len(s3_keys), 1000):
-                    batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
-                    s3.delete_objects(
-                        Bucket=config.iceberg_bucket,
-                        Delete={"Objects": batch},  # type: ignore[typeddict-item]
-                    )
-                    deleted += len(batch)
-                typer.echo(f"Deleted {deleted} S3 objects.")
-            else:
-                prefix = f"{config.glue_database}/{table}/"
-                typer.echo(f"Deleting s3://{config.iceberg_bucket}/{prefix}*")
-                paginator = s3.get_paginator("list_objects_v2")
-                deleted = 0
-                for page in paginator.paginate(Bucket=config.iceberg_bucket, Prefix=prefix):
-                    objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-                    if objects:
-                        s3.delete_objects(
-                            Bucket=config.iceberg_bucket,
-                            Delete={"Objects": objects},  # type: ignore[typeddict-item]
-                        )
-                        deleted += len(objects)
-                typer.echo(f"Deleted {deleted} S3 objects.")
+            s3_keys = [
+                fp.removeprefix(f"s3://{config.iceberg_bucket}/") for fp in file_paths
+            ]
+            for i in range(0, len(s3_keys), 1000):
+                batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
+                s3.delete_objects(
+                    Bucket=config.iceberg_bucket,
+                    Delete={"Objects": batch},  # type: ignore[typeddict-item]
+                )
+            typer.echo(f"Deleted {len(s3_keys)} orphan data files from S3.")
 
+        # 3. Optionally drop the entire Iceberg table
         if drop_iceberg:
-            props: dict[str, str] = {
-                "type": "glue",
-                "glue.region": config.aws_region,
-                "s3.region": config.aws_region,
-                "warehouse": config.iceberg_warehouse,
-            }
-            if config.aws_profile:
-                props["glue.profile-name"] = config.aws_profile
-                props["s3.profile-name"] = config.aws_profile
-            catalog = load_catalog("glue", **props)
-            full_name = f"{config.glue_database}.{table}"
-            try:
-                catalog.drop_table(full_name)
-                typer.echo(f"Dropped Iceberg table {full_name}.")
-            except Exception:
-                typer.echo(f"Iceberg table {full_name} not found, skipping.")
+            catalog.drop_table(full_name)
+            typer.echo(f"Dropped Iceberg table {full_name}.")
 
-        count = ledger.delete_filtered(table, after=after, before=before, provider=provider)
+        # 4. Delete ledger records
+        count = ledger.delete_filtered(table, after=after, before=before)
         typer.echo(f"Deleted {count} ledger records for table {table!r}{scope}.")
     finally:
         ledger.close()
+
+
+def _build_iceberg_filter(
+    after: str | None, before: str | None
+) -> str:
+    """Build a PyIceberg filter expression string from date range parameters."""
+
+    parts: list[str] = []
+    if after:
+        parts.append(f"sampled_at >= '{after}T00:00:00+00:00'")
+    if before:
+        parts.append(f"sampled_at < '{before}T00:00:00+00:00'")
+    if not parts:
+        return AlwaysTrue()  # type: ignore[return-value]
+    return " and ".join(parts)
+
+
+def _build_ledger_count_query(
+    table_name: str, after: str | None, before: str | None
+) -> tuple[str, tuple[str, ...]]:
+    """Build a SELECT COUNT query for ledger records matching date filters."""
+    where = "WHERE table_name = %s"
+    params: list[str] = [table_name]
+    if after:
+        where += " AND sample_date >= %s"
+        params.append(after)
+    if before:
+        where += " AND sample_date < %s"
+        params.append(before)
+    return f"SELECT COUNT(*) FROM catalog_files {where}", tuple(params)
