@@ -232,13 +232,57 @@ class Ledger:
 
     def delete_all(self, table_name: str) -> int:
         """Delete all records for a table. Returns the count deleted."""
-        rows = self._fetchall(
-            "SELECT COUNT(*) FROM catalog_files WHERE table_name = %s",
-            (table_name,),
-        )
+        return self.delete_filtered(table_name)
+
+    def delete_filtered(
+        self,
+        table_name: str,
+        after: str | None = None,
+        before: str | None = None,
+        provider: str | None = None,
+    ) -> int:
+        """Delete records matching the given filters. Returns the count deleted."""
+        where = "WHERE table_name = %s"
+        params: list[str] = [table_name]
+
+        if after:
+            where += " AND sample_date >= %s"
+            params.append(after)
+        if before:
+            where += " AND sample_date < %s"
+            params.append(before)
+        if provider:
+            where += " AND provider = %s"
+            params.append(provider)
+
+        rows = self._fetchall(f"SELECT COUNT(*) FROM catalog_files {where}", tuple(params))
         count = rows[0][0] if rows else 0
-        self._execute("DELETE FROM catalog_files WHERE table_name = %s", (table_name,))
+        self._execute(f"DELETE FROM catalog_files {where}", tuple(params))
         return count
+
+    def get_s3_keys(
+        self,
+        table_name: str,
+        after: str | None = None,
+        before: str | None = None,
+        provider: str | None = None,
+    ) -> list[str]:
+        """Return S3 keys for records matching the given filters."""
+        where = "WHERE table_name = %s AND s3_key IS NOT NULL"
+        params: list[str] = [table_name]
+
+        if after:
+            where += " AND sample_date >= %s"
+            params.append(after)
+        if before:
+            where += " AND sample_date < %s"
+            params.append(before)
+        if provider:
+            where += " AND provider = %s"
+            params.append(provider)
+
+        rows = self._fetchall(f"SELECT s3_key FROM catalog_files {where}", tuple(params))
+        return [row[0] for row in rows]
 
     def _query_status(self, status: str, table_name: str) -> list[FileRecord]:
         rows = self._fetchall(

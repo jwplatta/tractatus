@@ -276,50 +276,86 @@ def catalog_reset(
     drop_iceberg: Annotated[
         bool, typer.Option("--drop-iceberg", help="Also drop the Iceberg table from Glue.")
     ] = False,
+    after: Annotated[
+        str | None, typer.Option("--after", help="Only reset sample_date >= DATE (YYYY-MM-DD).")
+    ] = None,
+    before: Annotated[
+        str | None, typer.Option("--before", help="Only reset sample_date < DATE (YYYY-MM-DD).")
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Only reset a specific provider.")
+    ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Reset the ledger and optionally clean up S3/Iceberg for a table.
 
-    Use this during development to wipe a table and re-publish from scratch.
+    Use --after/--before/--provider for partial resets. Without filters,
+    resets everything for the table.
     """
     from tractatus.catalog import CatalogConfig, Ledger
+
+    is_filtered = any([after, before, provider])
+
+    if drop_iceberg and is_filtered:
+        typer.echo("Cannot use --drop-iceberg with date/provider filters.", err=True)
+        raise typer.Exit(1)
 
     config = CatalogConfig.load()
     ledger = Ledger(config.database_url)
 
     try:
-        summary = ledger.summary(table_name=table)
-        total = sum(summary.values()) if summary else 0
-        parts = [f"{total} ledger records"]
+        filter_desc = []
+        if after:
+            filter_desc.append(f"after={after}")
+        if before:
+            filter_desc.append(f"before={before}")
+        if provider:
+            filter_desc.append(f"provider={provider}")
+        scope = f" ({', '.join(filter_desc)})" if filter_desc else ""
+
+        parts = ["ledger records"]
         if delete_s3:
             parts.append("S3 data")
         if drop_iceberg:
             parts.append("Iceberg table")
-        msg = f"This will delete {', '.join(parts)} for table {table!r}. Continue?"
+        msg = f"This will delete {', '.join(parts)} for table {table!r}{scope}. Continue?"
         if not yes and not typer.confirm(msg, default=False):
             raise typer.Abort()
 
         if delete_s3:
-            # Delete all S3 objects under the table's data prefix
             session_kwargs: dict[str, str] = {"region_name": config.aws_region}
             if config.aws_profile:
                 session_kwargs["profile_name"] = config.aws_profile
             import boto3
 
             s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
-            prefix = f"{config.glue_database}/{table}/"
-            typer.echo(f"Deleting s3://{config.iceberg_bucket}/{prefix}*")
-            paginator = s3.get_paginator("list_objects_v2")
-            deleted = 0
-            for page in paginator.paginate(Bucket=config.iceberg_bucket, Prefix=prefix):
-                objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-                if objects:
+
+            if is_filtered:
+                s3_keys = ledger.get_s3_keys(table, after=after, before=before, provider=provider)
+                deleted = 0
+                # Delete in batches of 1000 (S3 limit)
+                for i in range(0, len(s3_keys), 1000):
+                    batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
                     s3.delete_objects(
                         Bucket=config.iceberg_bucket,
-                        Delete={"Objects": objects},  # type: ignore[typeddict-item]
+                        Delete={"Objects": batch},  # type: ignore[typeddict-item]
                     )
-                    deleted += len(objects)
-            typer.echo(f"Deleted {deleted} S3 objects.")
+                    deleted += len(batch)
+                typer.echo(f"Deleted {deleted} S3 objects.")
+            else:
+                prefix = f"{config.glue_database}/{table}/"
+                typer.echo(f"Deleting s3://{config.iceberg_bucket}/{prefix}*")
+                paginator = s3.get_paginator("list_objects_v2")
+                deleted = 0
+                for page in paginator.paginate(Bucket=config.iceberg_bucket, Prefix=prefix):
+                    objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                    if objects:
+                        s3.delete_objects(
+                            Bucket=config.iceberg_bucket,
+                            Delete={"Objects": objects},  # type: ignore[typeddict-item]
+                        )
+                        deleted += len(objects)
+                typer.echo(f"Deleted {deleted} S3 objects.")
 
         if drop_iceberg:
             from pyiceberg.catalog import load_catalog
@@ -341,7 +377,7 @@ def catalog_reset(
             except Exception:
                 typer.echo(f"Iceberg table {full_name} not found, skipping.")
 
-        count = ledger.delete_all(table)
-        typer.echo(f"Deleted {count} ledger records for table {table!r}.")
+        count = ledger.delete_filtered(table, after=after, before=before, provider=provider)
+        typer.echo(f"Deleted {count} ledger records for table {table!r}{scope}.")
     finally:
         ledger.close()
