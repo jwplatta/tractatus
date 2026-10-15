@@ -181,3 +181,13 @@ tractatus-publisher:
   depends_on:
     - postgres
 ```
+
+### Scheduling
+
+The publisher should run on weekdays when US markets are closed. A host cron entry at 4:30 AM CST (10:30 UTC):
+
+```
+30 10 * * 1-5  docker compose -f /path/to/quant-infra/docker-compose.yml run --rm tractatus-publisher publish --table options
+```
+
+Pass `--after` to limit discovery to recent data once backfill is complete.
