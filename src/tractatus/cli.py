@@ -211,9 +211,9 @@ def catalog_publish(
 ) -> None:
     """Discover, upload, and commit parquet files to an Iceberg table."""
     from tractatus.catalog import CatalogConfig, Publisher
-    from tractatus.catalog.logging import setup_logging
+    from tractatus.logging import setup_logging
 
-    setup_logging(verbose=True)
+    setup_logging("catalog", verbose=True)
 
     parsed_after = date.fromisoformat(after) if after else None
     parsed_before = date.fromisoformat(before) if before else None

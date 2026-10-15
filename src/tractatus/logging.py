@@ -1,7 +1,7 @@
-"""Structured JSONL logging for the catalog publisher.
+"""Structured JSONL logging for Tractatus.
 
-Writes JSON-lines logs to ``~/.tractatus/logs/catalog.jsonl`` for ingestion
-by Promtail/Loki. Each line is a self-contained JSON object with ``ts``,
+Writes JSON-lines logs to ``~/.tractatus/logs/{name}.jsonl`` for ingestion
+by Alloy/Loki. Each line is a self-contained JSON object with ``ts``,
 ``level``, and structured fields.
 """
 
@@ -14,7 +14,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOG_DIR = Path.home() / ".tractatus" / "logs"
-LOG_FILE = LOG_DIR / "catalog.jsonl"
 LOG_ROTATION_SIZE = 10 * 1024 * 1024  # 10 MB
 LOG_ROTATION_COUNT = 5
 
@@ -41,15 +40,17 @@ class JsonlFormatter(logging.Formatter):
         return json.dumps(entry, default=str)
 
 
-def setup_logging(verbose: bool = False) -> logging.Logger:
-    """Configure and return the catalog logger.
+def setup_logging(name: str, verbose: bool = False) -> logging.Logger:
+    """Configure and return a logger that writes JSONL to ~/.tractatus/logs/{name}.jsonl.
 
     Parameters
     ----------
+    name:
+        Logger and log file name (e.g. "catalog", "tickrake").
     verbose:
         If True, also log human-readable output to stdout.
     """
-    logger = logging.getLogger("tractatus.catalog")
+    logger = logging.getLogger(f"tractatus.{name}")
     logger.setLevel(logging.DEBUG)
 
     if logger.handlers:
@@ -58,7 +59,7 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     jsonl_handler = RotatingFileHandler(
-        LOG_FILE,
+        LOG_DIR / f"{name}.jsonl",
         maxBytes=LOG_ROTATION_SIZE,
         backupCount=LOG_ROTATION_COUNT,
     )
