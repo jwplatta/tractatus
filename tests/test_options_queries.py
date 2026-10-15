@@ -24,9 +24,7 @@ def _make_options_table(rows: list[dict]) -> pa.Table:  # type: ignore[type-arg]
             "strike": pa.array([float(r["strike"]) for r in rows], type=pa.float64()),
             "contract_type": pa.array([r["contract_type"] for r in rows], type=pa.string()),
             "expiration_date": pa.array([r["expiration_date"] for r in rows], type=pa.string()),
-            "sampled_at": pa.array(
-                [r["sampled_at"] for r in rows], type=pa.timestamp("us")
-            ),
+            "sampled_at": pa.array([r["sampled_at"] for r in rows], type=pa.timestamp("us")),
             "open_interest": pa.array([float(r.get("oi", 0)) for r in rows], type=pa.float64()),
             "volatility": pa.array([float(r.get("vol", 0.2)) for r in rows], type=pa.float64()),
             "underlying_price": pa.array(
@@ -47,16 +45,46 @@ _T2 = datetime(2026, 1, 5, 14, 40)
 def parquet_file(tmp_path: Path) -> Path:
     """Single parquet with two expiries and three sample times."""
     rows = [
-        {"strike": 500, "contract_type": "call", "expiration_date": _EXP_A.isoformat(),
-         "sampled_at": _T0, "oi": 100, "vol": 0.20},
-        {"strike": 505, "contract_type": "put", "expiration_date": _EXP_A.isoformat(),
-         "sampled_at": _T0, "oi": 200, "vol": 0.22},
-        {"strike": 500, "contract_type": "call", "expiration_date": _EXP_A.isoformat(),
-         "sampled_at": _T1, "oi": 110, "vol": 0.21},
-        {"strike": 500, "contract_type": "call", "expiration_date": _EXP_A.isoformat(),
-         "sampled_at": _T2, "oi": 120, "vol": 0.23},
-        {"strike": 510, "contract_type": "call", "expiration_date": _EXP_B.isoformat(),
-         "sampled_at": _T0, "oi": 50, "vol": 0.18},
+        {
+            "strike": 500,
+            "contract_type": "call",
+            "expiration_date": _EXP_A.isoformat(),
+            "sampled_at": _T0,
+            "oi": 100,
+            "vol": 0.20,
+        },
+        {
+            "strike": 505,
+            "contract_type": "put",
+            "expiration_date": _EXP_A.isoformat(),
+            "sampled_at": _T0,
+            "oi": 200,
+            "vol": 0.22,
+        },
+        {
+            "strike": 500,
+            "contract_type": "call",
+            "expiration_date": _EXP_A.isoformat(),
+            "sampled_at": _T1,
+            "oi": 110,
+            "vol": 0.21,
+        },
+        {
+            "strike": 500,
+            "contract_type": "call",
+            "expiration_date": _EXP_A.isoformat(),
+            "sampled_at": _T2,
+            "oi": 120,
+            "vol": 0.23,
+        },
+        {
+            "strike": 510,
+            "contract_type": "call",
+            "expiration_date": _EXP_B.isoformat(),
+            "sampled_at": _T0,
+            "oi": 50,
+            "vol": 0.18,
+        },
     ]
     path = tmp_path / "options.parquet"
     pq.write_table(_make_options_table(rows), path)
@@ -182,11 +210,21 @@ def test_load_lookback_deduplicates_within_interval_bucket(client, tmp_path):
     """Two rows with same strike/contract_type in the same 60-min bucket → one row out."""
     t_base = datetime(2026, 1, 5, 14, 0)
     rows = [
-        {"strike": 500, "contract_type": "call", "expiration_date": _EXP_A.isoformat(),
-         "sampled_at": t_base, "oi": 100},
+        {
+            "strike": 500,
+            "contract_type": "call",
+            "expiration_date": _EXP_A.isoformat(),
+            "sampled_at": t_base,
+            "oi": 100,
+        },
         # same bucket, same key — later timestamp wins
-        {"strike": 500, "contract_type": "call", "expiration_date": _EXP_A.isoformat(),
-         "sampled_at": t_base + timedelta(minutes=30), "oi": 200},
+        {
+            "strike": 500,
+            "contract_type": "call",
+            "expiration_date": _EXP_A.isoformat(),
+            "sampled_at": t_base + timedelta(minutes=30),
+            "oi": 200,
+        },
     ]
     path = tmp_path / "dedup.parquet"
     pq.write_table(_make_options_table(rows), path)

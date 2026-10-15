@@ -19,9 +19,11 @@ app = typer.Typer(no_args_is_help=True, help="Tractatus research tools.")
 init_app = typer.Typer(no_args_is_help=True, help="Create a research project.")
 data_app = typer.Typer(no_args_is_help=True, help="Retrieve Tickrake data.")
 config_app = typer.Typer(no_args_is_help=True, help="Manage Tractatus configuration.")
+catalog_app = typer.Typer(no_args_is_help=True, help="Iceberg catalog operations.")
 app.add_typer(init_app, name="init")
 app.add_typer(data_app, name="data")
 app.add_typer(config_app, name="config")
+app.add_typer(catalog_app, name="catalog")
 
 _PROJECT_FILES = {
     ".python-version": "3.11\n",
@@ -186,3 +188,157 @@ def verify() -> None:
         artifact.write_text(__import__("json").dumps(metrics, indent=2))
         mlflow.log_artifact(str(artifact))
         typer.echo(f"MLflow run: {active_run.info.run_id}")
+
+
+@catalog_app.command("publish")
+def catalog_publish(
+    table: Annotated[str, typer.Option("--table", help="Iceberg table to publish.")] = "options",
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Discover only, skip upload and commit.")
+    ] = False,
+    provider: Annotated[
+        list[str] | None, typer.Option("--provider", help="Limit to specific providers.")
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Max files to upload and commit.")
+    ] = None,
+    after: Annotated[
+        str | None, typer.Option("--after", help="Only include sample_date >= DATE (YYYY-MM-DD).")
+    ] = None,
+    before: Annotated[
+        str | None, typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD).")
+    ] = None,
+) -> None:
+    """Discover, upload, and commit parquet files to an Iceberg table."""
+    from tractatus.catalog import CatalogConfig, Publisher
+
+    parsed_after = date.fromisoformat(after) if after else None
+    parsed_before = date.fromisoformat(before) if before else None
+
+    config = CatalogConfig.load()
+    publisher = Publisher(config)
+    try:
+        result = publisher.run(
+            table_name=table,
+            dry_run=dry_run,
+            providers=provider,
+            limit=limit,
+            after=parsed_after,
+            before=parsed_before,
+        )
+    finally:
+        publisher.close()
+
+    typer.echo(f"Table:      {table}")
+    typer.echo(f"Discovered: {result.discovered}")
+    typer.echo(f"Uploaded:   {result.uploaded}")
+    typer.echo(f"Committed:  {result.committed}")
+    typer.echo(f"Errors:     {result.errors}")
+    for detail in result.details:
+        typer.echo(detail)
+
+
+@catalog_app.command("status")
+def catalog_status(
+    table: Annotated[
+        str | None, typer.Option("--table", help="Filter to a specific table.")
+    ] = None,
+) -> None:
+    """Show publication ledger summary."""
+    from tractatus.catalog import CatalogConfig, Ledger
+
+    config = CatalogConfig.load()
+    ledger = Ledger(config.database_url)
+    try:
+        summary = ledger.summary(table_name=table)
+    finally:
+        ledger.close()
+
+    if not summary:
+        typer.echo("Ledger is empty.")
+        return
+
+    if table:
+        typer.echo(f"Table: {table}")
+    for status, count in sorted(summary.items()):
+        typer.echo(f"  {status}: {count}")
+
+
+@catalog_app.command("reset")
+def catalog_reset(
+    table: Annotated[str, typer.Option("--table", help="Iceberg table to reset.")],
+    delete_s3: Annotated[
+        bool, typer.Option("--delete-s3", help="Also delete uploaded files from S3.")
+    ] = False,
+    drop_iceberg: Annotated[
+        bool, typer.Option("--drop-iceberg", help="Also drop the Iceberg table from Glue.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+) -> None:
+    """Reset the ledger and optionally clean up S3/Iceberg for a table.
+
+    Use this during development to wipe a table and re-publish from scratch.
+    """
+    from tractatus.catalog import CatalogConfig, Ledger
+
+    config = CatalogConfig.load()
+    ledger = Ledger(config.database_url)
+
+    try:
+        summary = ledger.summary(table_name=table)
+        total = sum(summary.values()) if summary else 0
+        parts = [f"{total} ledger records"]
+        if delete_s3:
+            parts.append("S3 data")
+        if drop_iceberg:
+            parts.append("Iceberg table")
+        msg = f"This will delete {', '.join(parts)} for table {table!r}. Continue?"
+        if not yes and not typer.confirm(msg, default=False):
+            raise typer.Abort()
+
+        if delete_s3:
+            # Delete all S3 objects under the table's data prefix
+            session_kwargs: dict[str, str] = {"region_name": config.aws_region}
+            if config.aws_profile:
+                session_kwargs["profile_name"] = config.aws_profile
+            import boto3
+
+            s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
+            prefix = f"{config.glue_database}/{table}/"
+            typer.echo(f"Deleting s3://{config.iceberg_bucket}/{prefix}*")
+            paginator = s3.get_paginator("list_objects_v2")
+            deleted = 0
+            for page in paginator.paginate(Bucket=config.iceberg_bucket, Prefix=prefix):
+                objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                if objects:
+                    s3.delete_objects(
+                        Bucket=config.iceberg_bucket,
+                        Delete={"Objects": objects},  # type: ignore[typeddict-item]
+                    )
+                    deleted += len(objects)
+            typer.echo(f"Deleted {deleted} S3 objects.")
+
+        if drop_iceberg:
+            from pyiceberg.catalog import load_catalog
+
+            props: dict[str, str] = {
+                "type": "glue",
+                "glue.region": config.aws_region,
+                "s3.region": config.aws_region,
+                "warehouse": config.iceberg_warehouse,
+            }
+            if config.aws_profile:
+                props["glue.profile-name"] = config.aws_profile
+                props["s3.profile-name"] = config.aws_profile
+            catalog = load_catalog("glue", **props)
+            full_name = f"{config.glue_database}.{table}"
+            try:
+                catalog.drop_table(full_name)
+                typer.echo(f"Dropped Iceberg table {full_name}.")
+            except Exception:
+                typer.echo(f"Iceberg table {full_name} not found, skipping.")
+
+        count = ledger.delete_all(table)
+        typer.echo(f"Deleted {count} ledger records for table {table!r}.")
+    finally:
+        ledger.close()
