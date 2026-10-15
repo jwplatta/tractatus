@@ -66,7 +66,12 @@ def _parse_parquet_path(path: Path, data_root: Path) -> tuple[str, str, date] | 
     return provider, root, sample_date
 
 
-def discover_files(data_root: Path, providers: list[str] | None = None) -> list[DiscoveredFile]:
+def discover_files(
+    data_root: Path,
+    providers: list[str] | None = None,
+    after: date | None = None,
+    before: date | None = None,
+) -> list[DiscoveredFile]:
     """Scan data_root for compacted options parquet files.
 
     Parameters
@@ -75,6 +80,10 @@ def discover_files(data_root: Path, providers: list[str] | None = None) -> list[
         Root directory containing provider subdirectories with options parquet.
     providers:
         If given, only scan these provider subdirectories.
+    after:
+        Only include files with sample_date >= after.
+    before:
+        Only include files with sample_date < before.
     """
     results: list[DiscoveredFile] = []
 
@@ -101,6 +110,12 @@ def discover_files(data_root: Path, providers: list[str] | None = None) -> list[
                 continue
 
             provider, root, sample_date = parsed
+
+            if after is not None and sample_date < after:
+                continue
+            if before is not None and sample_date >= before:
+                continue
+
             relative = str(parquet_path.relative_to(data_root))
 
             results.append(

@@ -202,14 +202,30 @@ def catalog_publish(
     limit: Annotated[
         int | None, typer.Option("--limit", help="Max files to upload and commit.")
     ] = None,
+    after: Annotated[
+        str | None, typer.Option("--after", help="Only include sample_date >= DATE (YYYY-MM-DD).")
+    ] = None,
+    before: Annotated[
+        str | None, typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD).")
+    ] = None,
 ) -> None:
     """Discover, upload, and commit parquet files to an Iceberg table."""
     from tractatus.catalog import CatalogConfig, Publisher
 
+    parsed_after = date.fromisoformat(after) if after else None
+    parsed_before = date.fromisoformat(before) if before else None
+
     config = CatalogConfig.load()
     publisher = Publisher(config)
     try:
-        result = publisher.run(table_name=table, dry_run=dry_run, providers=provider, limit=limit)
+        result = publisher.run(
+            table_name=table,
+            dry_run=dry_run,
+            providers=provider,
+            limit=limit,
+            after=parsed_after,
+            before=parsed_before,
+        )
     finally:
         publisher.close()
 

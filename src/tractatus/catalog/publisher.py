@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import boto3
@@ -44,6 +45,8 @@ class Publisher:
         dry_run: bool = False,
         providers: list[str] | None = None,
         limit: int | None = None,
+        after: date | None = None,
+        before: date | None = None,
     ) -> PublishResult:
         """Execute the full discover → upload → commit pipeline for a table."""
         if table_name not in TABLE_DEFS:
@@ -53,7 +56,7 @@ class Publisher:
 
         result = PublishResult()
 
-        result.discovered = self._discover(table_name, providers)
+        result.discovered = self._discover(table_name, providers, after=after, before=before)
         if dry_run:
             result.details.append("Dry run — skipping upload and commit.")
             return result
@@ -67,10 +70,16 @@ class Publisher:
 
         return result
 
-    def _discover(self, table_name: str, providers: list[str] | None = None) -> int:
+    def _discover(
+        self,
+        table_name: str,
+        providers: list[str] | None = None,
+        after: date | None = None,
+        before: date | None = None,
+    ) -> int:
         """Scan data_root/{table_name} for parquet files and record them in the ledger."""
         table_dir = self._config.data_root / table_name
-        files = discover_files(table_dir, providers=providers)
+        files = discover_files(table_dir, providers=providers, after=after, before=before)
         for f in files:
             self._ledger.record_discovered(
                 path=f.relative_path,
