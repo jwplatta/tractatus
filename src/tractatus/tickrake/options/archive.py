@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -173,8 +174,6 @@ class ArchiveClient:
     @contextmanager
     def _lock(self, path: Path) -> Iterator[None]:
         """An advisory per-object lock; works on the Unix systems Tickrake supports."""
-        import fcntl
-
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("w") as lock_file:

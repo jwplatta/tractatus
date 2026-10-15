@@ -163,7 +163,7 @@ def notebook() -> None:
 @app.command()
 def verify() -> None:
     """Validate project configuration and run the packaged smoke backtest."""
-    import mlflow  # type: ignore[import-not-found]
+    import mlflow  # type: ignore[import-not-found]  # noqa: PLC0415
 
     root = Path.cwd()
     if not (root / "research" / "smoke_backtest.py").exists():
@@ -179,8 +179,8 @@ def verify() -> None:
             "Packaged smoke dataset is unavailable from the configured Tickrake archive", err=True
         )
         raise typer.Exit(1)
-    import pandas as pd
-    from research.smoke_backtest import run  # type: ignore[import-not-found]
+    import pandas as pd  # noqa: PLC0415
+    from research.smoke_backtest import run  # type: ignore[import-not-found]  # noqa: PLC0415
 
     metrics = run(pd.read_parquet(parquet))
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)

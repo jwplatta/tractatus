@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import psycopg
+
 
 @dataclass
 class FileRecord:
@@ -71,8 +73,6 @@ class Ledger:
     def __init__(self, database_url: str) -> None:
         self._is_pg = database_url.startswith("postgresql://")
         if self._is_pg:
-            import psycopg
-
             self._conn: Any = psycopg.connect(database_url, autocommit=True)
         else:
             path = (

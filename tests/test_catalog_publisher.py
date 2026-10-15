@@ -6,7 +6,10 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tractatus.catalog.config import CatalogConfig
+from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.publisher import Publisher
 
 
@@ -134,8 +137,6 @@ def test_unknown_table_raises(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
     publisher = Publisher(config)
     try:
-        import pytest
-
         with pytest.raises(ValueError, match="Unknown table"):
             publisher.run(table_name="nonexistent")
     finally:
@@ -150,8 +151,6 @@ def test_resume_after_upload_failure(tmp_path: Path) -> None:
     publisher = Publisher(config)
     publisher.run(table_name="options", dry_run=True)
     publisher.close()
-
-    from tractatus.catalog.ledger import Ledger
 
     ledger = Ledger(config.database_url)
     pending = ledger.pending_upload("options")
