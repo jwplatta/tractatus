@@ -1,18 +1,9 @@
-"""Iceberg table schema definitions.
-
-Each table definition is a ``TableDef`` containing the table name, Iceberg
-schema, and partition spec.  To add a new table, create a new ``TableDef``
-and register it in ``TABLE_DEFS``.
-"""
+"""Iceberg schema definition for the options table."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from pyiceberg.catalog import Catalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.table import Table
 from pyiceberg.transforms import MonthTransform
 from pyiceberg.types import (
     BooleanType,
@@ -24,19 +15,7 @@ from pyiceberg.types import (
     TimestamptzType,
 )
 
-
-@dataclass(frozen=True)
-class TableDef:
-    """An Iceberg table definition."""
-
-    name: str
-    schema: Schema
-    partition_spec: PartitionSpec
-
-
-# ------------------------------------------------------------------
-# Options
-# ------------------------------------------------------------------
+from tractatus.catalog.schemas._types import TableDef
 
 OPTIONS_TABLE = TableDef(
     name="options",
@@ -96,29 +75,3 @@ OPTIONS_TABLE = TableDef(
         )
     ),
 )
-
-# ------------------------------------------------------------------
-# Registry — add new TableDefs here
-# ------------------------------------------------------------------
-
-TABLE_DEFS: dict[str, TableDef] = {
-    OPTIONS_TABLE.name: OPTIONS_TABLE,
-}
-
-
-def ensure_table(catalog: Catalog, database: str, table_name: str) -> Table:
-    """Create an Iceberg table if it does not exist, or load it.
-
-    Looks up the schema and partition spec from ``TABLE_DEFS``.
-    """
-    table_def = TABLE_DEFS[table_name]
-    full_name = f"{database}.{table_name}"
-    try:
-        return catalog.load_table(full_name)
-    except Exception:
-        catalog.create_namespace_if_not_exists(database)
-        return catalog.create_table(
-            full_name,
-            schema=table_def.schema,
-            partition_spec=table_def.partition_spec,
-        )

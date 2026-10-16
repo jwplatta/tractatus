@@ -3,9 +3,8 @@
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import DiscoveredFile, discover_files
 from tractatus.catalog.ledger import FileRecord, Ledger
-from tractatus.catalog.normalize import normalize_parquet
 from tractatus.catalog.publisher import Publisher, PublishResult
-from tractatus.catalog.schema import TABLE_DEFS, TableDef
+from tractatus.catalog.schemas import TABLE_DEFS, TableDef
 
 __all__ = [
     "CatalogConfig",
@@ -17,5 +16,4 @@ __all__ = [
     "TABLE_DEFS",
     "TableDef",
     "discover_files",
-    "normalize_parquet",
 ]
