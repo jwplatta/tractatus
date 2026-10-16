@@ -14,6 +14,7 @@ from typing import Annotated
 import boto3
 import typer
 from pyiceberg.catalog import load_catalog
+from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import AlwaysTrue
 
 from tractatus.catalog import CatalogConfig, Ledger, Publisher
@@ -443,7 +444,7 @@ def catalog_reset(
 
         try:
             iceberg_table = catalog.load_table(full_name)
-        except Exception:
+        except NoSuchTableError:
             typer.echo(f"Iceberg table {full_name} not found.", err=True)
             raise typer.Exit(1) from None
 
@@ -513,6 +514,88 @@ def catalog_reset(
         # 4. Delete ledger records
         count = ledger.delete_filtered(table, after=after, before=before)
         typer.echo(f"Deleted {count} ledger records for table {table!r}{scope}.")
+    finally:
+        ledger.close()
+
+
+@catalog_app.command("setup")
+def catalog_setup() -> None:
+    """Create Iceberg tables defined in the schema registry.
+
+    Run once to initialize tables, or after adding new table definitions.
+    Existing tables are left untouched.
+    """
+    from tractatus.catalog.schema import TABLE_DEFS, ensure_table  # noqa: PLC0415
+
+    config = CatalogConfig.load()
+    props: dict[str, str] = {
+        "type": "glue",
+        "glue.region": config.aws_region,
+        "s3.region": config.aws_region,
+        "warehouse": config.iceberg_warehouse,
+    }
+    if config.aws_profile:
+        props["glue.profile-name"] = config.aws_profile
+        props["s3.profile-name"] = config.aws_profile
+
+    catalog = load_catalog("glue", **props)
+
+    for table_name in sorted(TABLE_DEFS):
+        full_name = f"{config.glue_database}.{table_name}"
+        table = ensure_table(catalog, config.glue_database, table_name)
+        typer.echo(f"{full_name} — {len(table.schema().fields)} fields")
+
+
+@catalog_app.command("purge")
+def catalog_purge(
+    table: Annotated[str, typer.Option("--table", help="Iceberg table to purge.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+) -> None:
+    """Purge an Iceberg table: delete all data/metadata from S3, drop from Glue, and reset ledger.
+
+    Use this for full table rebuilds (e.g. schema migration). For partial resets
+    scoped by date, use ``catalog reset`` instead.
+    """
+    config = CatalogConfig.load()
+    full_name = f"{config.glue_database}.{table}"
+
+    props: dict[str, str] = {
+        "type": "glue",
+        "glue.region": config.aws_region,
+        "s3.region": config.aws_region,
+        "warehouse": config.iceberg_warehouse,
+    }
+    if config.aws_profile:
+        props["glue.profile-name"] = config.aws_profile
+        props["s3.profile-name"] = config.aws_profile
+
+    catalog = load_catalog("glue", **props)
+
+    # Verify table exists before prompting
+    try:
+        catalog.load_table(full_name)
+    except NoSuchTableError:
+        typer.echo(f"Table {full_name} does not exist.", err=True)
+        raise typer.Exit(1) from None
+
+    ledger = Ledger(config.database_url)
+    try:
+        summary = ledger.summary(table)
+        ledger_count = sum(summary.values())
+
+        typer.echo(f"\nTable: {full_name}")
+        typer.echo(f"  Ledger records to delete: {ledger_count} {summary}")
+        typer.echo("  Will purge all S3 data/metadata and drop from Glue")
+        typer.echo()
+
+        if not yes and not typer.confirm("Proceed with purge?", default=False):
+            raise typer.Abort()
+
+        catalog.purge_table(full_name)
+        typer.echo(f"Purged {full_name} (data, metadata, and Glue entry removed).")
+
+        count = ledger.delete_all(table)
+        typer.echo(f"Deleted {count} ledger records.")
     finally:
         ledger.close()
 

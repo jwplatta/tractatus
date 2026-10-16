@@ -88,6 +88,81 @@ expirations = client.options_intraday.list_expirations("SPXW")
 df = client.options_intraday.fetch_csv(uri, dtypes={...})
 ```
 
+## CLI
+
+Tractatus includes a command-line interface for project scaffolding, data access, and Iceberg catalog management.
+
+```bash
+tractatus --help
+```
+
+### Project scaffolding
+
+```bash
+# Create a new research project with dependencies, MLflow, and tests
+tractatus init research --name my-study
+
+# Validate environment and run smoke backtest
+tractatus verify
+
+# Start JupyterLab
+tractatus notebook
+```
+
+### Data access
+
+```bash
+# Pull a historical options parquet file into TICKRAKE_DATA_DIR
+tractatus data pull SPXW 2026-06-25 --provider schwab
+```
+
+### Configuration
+
+```bash
+# Create ~/.tractatus/config.toml
+tractatus config init
+
+# Show resolved settings
+tractatus config show --effective
+```
+
+### Iceberg catalog
+
+Manages the publication pipeline: discover local Parquet files, normalize and upload to S3, and commit to Iceberg tables via AWS Glue.
+
+```bash
+# Create Iceberg tables from the schema registry (run once)
+tractatus catalog setup
+
+# Check ledger status
+tractatus catalog status --table options
+
+# Discover files without uploading
+tractatus catalog discover --table options --provider schwab
+
+# Full publish pipeline: discover → normalize → upload → commit
+tractatus catalog publish --table options
+tractatus catalog publish --table options --provider schwab --after 2026-06-01 --before 2026-07-01
+
+# Partial reset scoped by date (deletes Iceberg rows, S3 files, and ledger records)
+tractatus catalog reset --table options --after 2026-06-01 --before 2026-07-01
+
+# Full purge for table rebuilds (drops table, deletes all S3 data, resets ledger)
+tractatus catalog purge --table options
+
+# Seed a new ledger from an existing Iceberg table
+tractatus catalog sync-ledger --table options
+```
+
+#### Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `ICEBERG_BUCKET` | Yes | S3 bucket for Iceberg data and metadata |
+| `GLUE_DATABASE` | No | Glue database name (default: `tractatus`) |
+| `CATALOG_DATABASE_URL` | No | Ledger database (default: `~/.tractatus/catalog_ledger.db`). Set to a `postgresql://` URL for production. |
+| `S3_STORAGE_CLASS` | No | S3 storage class for uploads (default: `GLACIER_IR`) |
+
 ## Development
 
 ```bash

@@ -17,7 +17,7 @@ from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import discover_files
 from tractatus.catalog.ledger import FileRecord, Ledger
 from tractatus.catalog.normalize import normalize_parquet
-from tractatus.catalog.schema import TABLE_DEFS, ensure_table
+from tractatus.catalog.schema import TABLE_DEFS
 
 logger = logging.getLogger("tractatus.catalog")
 
@@ -287,7 +287,8 @@ class Publisher:
             return 0, 0
 
         catalog = self._iceberg_catalog()
-        table = ensure_table(catalog, self._config.glue_database, table_name)
+        full_name = f"{self._config.glue_database}.{table_name}"
+        table = catalog.load_table(full_name)
 
         s3_paths = [
             f"s3://{self._config.iceberg_bucket}/{r.s3_key}"
