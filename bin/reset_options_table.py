@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import argparse
 
+from dotenv import load_dotenv
 from pyiceberg.catalog import Catalog, load_catalog
+
+load_dotenv()
 
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.ledger import Ledger
