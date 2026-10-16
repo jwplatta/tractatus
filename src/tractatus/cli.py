@@ -18,7 +18,7 @@ from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import AlwaysTrue
 
 from tractatus.catalog import CatalogConfig, Ledger, Publisher
-from tractatus.catalog.discovery import _parse_parquet_path
+from tractatus.catalog.discovery import _parse_options
 from tractatus.config import TractatusConfig, config_template, default_config_path
 from tractatus.logging import setup_logging
 from tractatus.tickrake import TickrakeClient
@@ -355,7 +355,7 @@ def catalog_sync_ledger(
             s3_key = f"{config.glue_database}/{table}/{relative_path}"
 
             # Parse provider/root/sample_date from the relative path
-            parsed = _parse_parquet_path(Path(relative_path), Path("."))
+            parsed = _parse_options(Path(relative_path), Path("."))
             if parsed is None:
                 # Try parsing with just the filename parts
                 parts = relative_path.split("/")
@@ -524,7 +524,7 @@ def catalog_setup() -> None:
     Run once to initialize tables, or after adding new table definitions.
     Existing tables are left untouched.
     """
-    from tractatus.catalog.schema import TABLE_DEFS, ensure_table  # noqa: PLC0415
+    from tractatus.catalog.schemas import TABLE_DEFS, ensure_table  # noqa: PLC0415
 
     config = CatalogConfig.load()
     props: dict[str, str] = {

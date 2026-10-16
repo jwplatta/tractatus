@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import PurePosixPath
 
 import pyarrow.parquet as pq
 from pyiceberg.catalog import Catalog, load_catalog
@@ -14,9 +16,33 @@ from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import discover_files
 from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_table
-from tractatus.catalog.schema import TABLE_DEFS
+from tractatus.catalog.schemas import TABLE_DEFS
 
 logger = logging.getLogger("tractatus.catalog")
+
+_DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
+
+
+def _metadata_from_path(
+    relative_path: str, table_name: str
+) -> tuple[date | None, str | None, str | None]:
+    """Derive (sample_date, symbol, interval) from a file's relative path."""
+    parts = PurePosixPath(relative_path).parts
+
+    if table_name in ("level_one", "order_book"):
+        m = _DATE_DIR_RE.search(relative_path)
+        if m:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3))), None, None
+        return None, None, None
+
+    if table_name == "candles":
+        if len(parts) >= 4:
+            interval = parts[1]
+            symbol = PurePosixPath(parts[-1]).stem
+            return None, symbol, interval
+        return None, None, None
+
+    return None, None, None
 
 
 @dataclass
@@ -106,7 +132,9 @@ class Publisher:
     ) -> int:
         """Scan data_root/{table_name} for parquet files and record them in the ledger."""
         table_dir = self._config.data_root / table_name
-        files = discover_files(table_dir, providers=providers, after=after, before=before)
+        files = discover_files(
+            table_dir, table_name=table_name, providers=providers, after=after, before=before
+        )
         for f in files:
             self._ledger.record_discovered(
                 path=f.relative_path,
@@ -170,7 +198,14 @@ class Publisher:
 
             try:
                 arrow_table = pq.read_table(local_path)
-                normalized, diagnostics = normalize_table(arrow_table)
+                sample_dt, symbol, interval = _metadata_from_path(record.path, table_name)
+                normalized, diagnostics = normalize_table(
+                    arrow_table,
+                    table_name,
+                    sample_date=sample_dt,
+                    symbol=symbol,
+                    interval=interval,
+                )
                 if diagnostics:
                     logger.info(
                         {
