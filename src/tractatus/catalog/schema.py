@@ -16,6 +16,7 @@ from pyiceberg.table import Table
 from pyiceberg.transforms import MonthTransform
 from pyiceberg.types import (
     BooleanType,
+    DateType,
     DoubleType,
     LongType,
     NestedField,
@@ -44,7 +45,7 @@ OPTIONS_TABLE = TableDef(
         NestedField(field_id=2, name="symbol", field_type=StringType(), required=False),
         NestedField(field_id=3, name="description", field_type=StringType(), required=False),
         NestedField(field_id=4, name="strike", field_type=DoubleType(), required=False),
-        NestedField(field_id=5, name="expiration_date", field_type=StringType(), required=False),
+        NestedField(field_id=5, name="expiration_date", field_type=DateType(), required=False),
         NestedField(field_id=6, name="open", field_type=DoubleType(), required=False),
         NestedField(field_id=7, name="high", field_type=DoubleType(), required=False),
         NestedField(field_id=8, name="low", field_type=DoubleType(), required=False),

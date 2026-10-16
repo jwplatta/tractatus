@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -14,6 +16,7 @@ from pyiceberg.catalog import Catalog, load_catalog
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import discover_files
 from tractatus.catalog.ledger import FileRecord, Ledger
+from tractatus.catalog.normalize import normalize_parquet
 from tractatus.catalog.schema import TABLE_DEFS, ensure_table
 
 logger = logging.getLogger("tractatus.catalog")
@@ -191,12 +194,41 @@ class Publisher:
                     )
                     skipped += 1
                 else:
-                    s3.upload_file(
-                        str(local_path),
-                        self._config.iceberg_bucket,
-                        s3_key,
-                        ExtraArgs={"StorageClass": self._config.s3_storage_class},
-                    )
+                    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                        tmp_path = Path(tmp.name)
+                    try:
+                        diagnostics = normalize_parquet(local_path, tmp_path)
+                        if diagnostics:
+                            logger.info(
+                                {
+                                    "event": "normalize_applied",
+                                    "table": table_name,
+                                    "path": record.path,
+                                    "diagnostics": diagnostics,
+                                }
+                            )
+                        s3.upload_file(
+                            str(tmp_path),
+                            self._config.iceberg_bucket,
+                            s3_key,
+                            ExtraArgs={"StorageClass": self._config.s3_storage_class},
+                        )
+                    except ValueError as exc:
+                        self._ledger.mark_error(
+                            record.path, table_name, f"Normalization failed: {exc}"
+                        )
+                        logger.error(
+                            {
+                                "event": "normalize_error",
+                                "table": table_name,
+                                "path": record.path,
+                                "error": str(exc),
+                            }
+                        )
+                        errors += 1
+                        continue
+                    finally:
+                        tmp_path.unlink(missing_ok=True)
                     uploaded_bytes += record.size_bytes
                     logger.info(
                         {
@@ -288,9 +320,48 @@ class Publisher:
                     "error_message": str(exc),
                 }
             )
+
+            # Clean up orphaned S3 objects from this batch
+            s3_keys_to_delete = [r.s3_key for r in pending if r.s3_key]
+            cleanup_failures = self._cleanup_orphaned_s3(s3_keys_to_delete)
+
             for record in pending:
-                self._ledger.mark_error(record.path, table_name, f"Commit failed: {exc}")
+                if record.s3_key and record.s3_key in cleanup_failures:
+                    self._ledger.mark_error(
+                        record.path,
+                        table_name,
+                        f"Commit failed and orphan cleanup failed for {record.s3_key}: {exc}",
+                    )
+                else:
+                    # S3 object cleaned up — safe to retry full cycle
+                    self._ledger.mark_discovered_for_retry(record.path, table_name)
+
             return 0, len(pending)
+
+    def _cleanup_orphaned_s3(self, s3_keys: list[str]) -> set[str]:
+        """Delete orphaned S3 objects after a failed commit.
+
+        Returns the set of keys that could NOT be deleted.
+        """
+        if not s3_keys:
+            return set()
+        session = self._boto_session()
+        s3 = session.client("s3")
+        failures: set[str] = set()
+        for key in s3_keys:
+            try:
+                s3.delete_object(Bucket=self._config.iceberg_bucket, Key=key)
+                logger.info({"event": "orphan_cleaned", "s3_key": key})
+            except Exception as del_exc:
+                logger.error(
+                    {
+                        "event": "orphan_cleanup_failed",
+                        "s3_key": key,
+                        "error": str(del_exc),
+                    }
+                )
+                failures.add(key)
+        return failures
 
     def _s3_key_exists(self, s3: Any, s3_key: str) -> bool:
         """Check if an S3 key already exists via HEAD request."""

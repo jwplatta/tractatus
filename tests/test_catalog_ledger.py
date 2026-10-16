@@ -469,6 +469,29 @@ def test_pending_upload_no_filters_returns_all(ledger: Ledger) -> None:
     assert len(result) == 2
 
 
+def test_mark_discovered_for_retry(ledger: Ledger) -> None:
+    """After upload + retry reset, record returns to discovered with cleared fields."""
+    ledger.record_discovered(
+        "a.parquet",
+        table_name="options",
+        sha256="aaa",
+        size_bytes=100,
+        provider="schwab",
+        root="SPX",
+        sample_date="2026-01-01",
+    )
+    ledger.mark_uploaded("a.parquet", "options", "s3/key")
+    ledger.mark_discovered_for_retry("a.parquet", "options")
+
+    record = ledger.get("a.parquet", "options")
+    assert record is not None
+    assert record.status == "discovered"
+    assert record.s3_key is None
+    assert record.uploaded_at is None
+    assert record.committed_at is None
+    assert record.error is None
+
+
 def test_get_s3_keys_filtered(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.parquet",
