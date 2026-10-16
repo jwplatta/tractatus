@@ -239,7 +239,6 @@ def catalog_publish(
 
     typer.echo(f"Table:      {table}")
     typer.echo(f"Discovered: {result.discovered}")
-    typer.echo(f"Uploaded:   {result.uploaded}")
     typer.echo(f"Committed:  {result.committed}")
     typer.echo(f"Errors:     {result.errors}")
     for detail in result.details:

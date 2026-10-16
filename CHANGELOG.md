@@ -21,9 +21,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ### Changed
 
-- Publisher normalizes each file before S3 upload instead of uploading raw source Parquet.
+- Publisher uses `table.append()` to let Iceberg handle both S3 writes and metadata commits atomically. Removed manual boto3 S3 uploads, `add_files`, and orphan cleanup logic.
 - Publisher loads the Iceberg table directly via `load_table()` instead of auto-creating with `ensure_table()`. Use `tractatus catalog setup` to create tables.
-- On commit failure, publisher cleans up orphaned S3 objects and resets ledger records for retry. If cleanup fails, records stay in error with orphan details for manual reconciliation.
+- Files go directly from `discovered` to `committed` in the ledger — no intermediate `uploaded` state in the publish pipeline.
 
 ### Fixed
 
