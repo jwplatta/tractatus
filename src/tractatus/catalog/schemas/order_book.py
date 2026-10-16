@@ -16,6 +16,7 @@ from pyiceberg.types import (
     NestedField,
     StringType,
     StructType,
+    TimestamptzType,
 )
 
 from tractatus.catalog.schemas._types import TableDef
@@ -41,10 +42,10 @@ _PRICE_LEVEL_STRUCT = StructType(
 ORDER_BOOK_TABLE = TableDef(
     name="order_book",
     schema=Schema(
-        NestedField(field_id=1, name="received_at_ms", field_type=LongType(), required=False),
+        NestedField(field_id=1, name="received_at", field_type=TimestamptzType(), required=False),
         NestedField(field_id=2, name="symbol", field_type=StringType(), required=False),
         NestedField(field_id=3, name="service", field_type=StringType(), required=False),
-        NestedField(field_id=4, name="book_time_ms", field_type=LongType(), required=False),
+        NestedField(field_id=4, name="book_time", field_type=TimestamptzType(), required=False),
         NestedField(field_id=5, name="sample_date", field_type=DateType(), required=False),
         NestedField(
             field_id=6,

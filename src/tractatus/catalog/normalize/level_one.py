@@ -10,8 +10,9 @@ import json
 from datetime import date as date_type
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
-from tractatus.catalog.normalize.common import align_to_schema, get_canonical
+from tractatus.catalog.normalize.common import align_to_schema, epoch_ms_to_timestamp, get_canonical
 from tractatus.catalog.schemas.level_one import (
     _EXTRA_STRUCT,
     EXTRA_STRUCT_FIELDS,
@@ -98,6 +99,30 @@ def normalize_level_one(
 
         # Drop original extra_json
         table = table.drop(["extra_json"])
+
+    # Convert epoch-ms columns to timestamptz and rename
+    _MS_RENAMES = {
+        "received_at_ms": "received_at",
+        "quote_time_ms": "quote_time",
+        "trade_time_ms": "trade_time",
+    }
+    for old_name, new_name in _MS_RENAMES.items():
+        if old_name in table.column_names:
+            idx = table.column_names.index(old_name)
+            converted = epoch_ms_to_timestamp(table.column(old_name))
+            table = table.set_column(idx, new_name, converted)
+            diagnostics.append(f"Converted {old_name} to timestamptz as {new_name}")
+
+    # Convert promoted epoch-ms fields (36, 37, 38) to timestamptz
+    _TS_US_UTC = pa.timestamp("us", tz="UTC")
+    for col_name in ("quote_timestamp", "ask_timestamp", "trade_timestamp"):
+        if col_name in table.column_names:
+            col = table.column(col_name)
+            if pa.types.is_integer(col.type):
+                micros = pc.multiply(col.cast(pa.int64()), 1000)
+                converted = micros.cast(_TS_US_UTC)
+                table = table.set_column(table.column_names.index(col_name), col_name, converted)
+                diagnostics.append(f"Converted {col_name} from epoch-ms to timestamptz")
 
     # Add sample_date from caller
     if sample_date is not None and "sample_date" not in table.column_names:

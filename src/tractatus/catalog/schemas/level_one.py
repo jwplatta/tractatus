@@ -18,6 +18,7 @@ from pyiceberg.types import (
     NestedField,
     StringType,
     StructType,
+    TimestamptzType,
 )
 
 from tractatus.catalog.schemas._types import TableDef
@@ -73,11 +74,11 @@ _EXTRA_STRUCT = StructType(
 LEVEL_ONE_TABLE = TableDef(
     name="level_one",
     schema=Schema(
-        NestedField(field_id=1, name="received_at_ms", field_type=LongType(), required=False),
+        NestedField(field_id=1, name="received_at", field_type=TimestamptzType(), required=False),
         NestedField(field_id=2, name="symbol", field_type=StringType(), required=False),
         NestedField(field_id=3, name="service", field_type=StringType(), required=False),
-        NestedField(field_id=4, name="quote_time_ms", field_type=LongType(), required=False),
-        NestedField(field_id=5, name="trade_time_ms", field_type=LongType(), required=False),
+        NestedField(field_id=4, name="quote_time", field_type=TimestamptzType(), required=False),
+        NestedField(field_id=5, name="trade_time", field_type=TimestamptzType(), required=False),
         NestedField(field_id=6, name="bid", field_type=DoubleType(), required=False),
         NestedField(field_id=7, name="ask", field_type=DoubleType(), required=False),
         NestedField(field_id=8, name="last", field_type=DoubleType(), required=False),
@@ -87,9 +88,15 @@ LEVEL_ONE_TABLE = TableDef(
         NestedField(field_id=12, name="volume", field_type=LongType(), required=False),
         NestedField(field_id=13, name="sample_date", field_type=DateType(), required=False),
         # Promoted from extra_json
-        NestedField(field_id=100, name="quote_timestamp_ms", field_type=LongType(), required=False),
-        NestedField(field_id=101, name="ask_timestamp_ms", field_type=LongType(), required=False),
-        NestedField(field_id=102, name="trade_timestamp_ms", field_type=LongType(), required=False),
+        NestedField(
+            field_id=100, name="quote_timestamp", field_type=TimestamptzType(), required=False
+        ),
+        NestedField(
+            field_id=101, name="ask_timestamp", field_type=TimestamptzType(), required=False
+        ),
+        NestedField(
+            field_id=102, name="trade_timestamp", field_type=TimestamptzType(), required=False
+        ),
         NestedField(
             field_id=103, name="implied_volatility", field_type=DoubleType(), required=False
         ),
@@ -114,9 +121,9 @@ LEVEL_ONE_TABLE = TableDef(
 # Mapping from extra_json key → (promoted top-level column name | None).
 # Keys not listed here go into the ``extra`` struct as ``f{key}``.
 PROMOTED_FIELDS: dict[str, str] = {
-    "36": "quote_timestamp_ms",
-    "37": "ask_timestamp_ms",
-    "38": "trade_timestamp_ms",
+    "36": "quote_timestamp",
+    "37": "ask_timestamp",
+    "38": "trade_timestamp",
     "44": "implied_volatility",
     "45": "delta",
     "assetMainType": "asset_main_type",

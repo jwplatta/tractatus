@@ -49,7 +49,10 @@ class TestNormalizeLevelOne:
     def test_promotes_fields(self) -> None:
         table = self._make_table()
         result, diags = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
-        assert result.column("quote_timestamp_ms")[0].as_py() == 1790349918161
+        # Promoted timestamp fields are converted from epoch-ms to timestamptz
+        qt = result.column("quote_timestamp")[0].as_py()
+        assert isinstance(qt, datetime.datetime)
+        assert qt.tzinfo is not None
         assert result.column("implied_volatility")[0].as_py() == pytest.approx(1.61)
         assert result.column("delta")[0].as_py() == pytest.approx(0.217)
         assert result.column("asset_main_type")[0].as_py() == "EQUITY"
@@ -67,6 +70,15 @@ class TestNormalizeLevelOne:
         table = self._make_table()
         result, _ = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
         assert result.column("sample_date")[0].as_py() == datetime.date(2026, 10, 15)
+
+    def test_converts_ms_to_timestamps(self) -> None:
+        table = self._make_table()
+        result, diags = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
+        # Source epoch-ms columns are converted and renamed
+        assert "received_at_ms" not in result.column_names
+        received = result.column("received_at")[0].as_py()
+        assert isinstance(received, datetime.datetime)
+        assert received.tzinfo is not None
 
     def test_null_extra_json(self) -> None:
         table = pa.table(
@@ -87,7 +99,7 @@ class TestNormalizeLevelOne:
             }
         )
         result, _ = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
-        assert result.column("quote_timestamp_ms")[0].as_py() is None
+        assert result.column("quote_timestamp")[0].as_py() is None
         assert result.column("extra")[0].as_py() is None
 
 
@@ -141,6 +153,16 @@ class TestNormalizeOrderBook:
         assert bids[0]["num_orders"] == 2
         assert len(bids[0]["venues"]) == 2
         assert bids[0]["venues"][0]["venue"] == "NSDQ"
+
+    def test_converts_ms_to_timestamps(self) -> None:
+        table = self._make_table()
+        result, _ = normalize_table(table, "order_book", sample_date=datetime.date(2026, 10, 15))
+        assert "received_at_ms" not in result.column_names
+        assert "book_time_ms" not in result.column_names
+        received = result.column("received_at")[0].as_py()
+        assert isinstance(received, datetime.datetime)
+        book_time = result.column("book_time")[0].as_py()
+        assert isinstance(book_time, datetime.datetime)
 
     def test_adds_sample_date(self) -> None:
         table = self._make_table()

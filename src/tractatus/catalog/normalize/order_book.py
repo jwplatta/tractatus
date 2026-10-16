@@ -11,7 +11,7 @@ from datetime import date as date_type
 
 import pyarrow as pa
 
-from tractatus.catalog.normalize.common import align_to_schema, get_canonical
+from tractatus.catalog.normalize.common import align_to_schema, epoch_ms_to_timestamp, get_canonical
 from tractatus.catalog.schemas.order_book import ORDER_BOOK_TABLE
 
 _COLUMNS, _TYPES = get_canonical(ORDER_BOOK_TABLE.schema)
@@ -59,6 +59,15 @@ def normalize_order_book(
             parsed = _parse_book_json(table.column(json_col_name), n_rows)
             table = table.append_column(target_col, parsed)
             diagnostics.append(f"Parsed {json_col_name} into nested {target_col}")
+
+    # Convert epoch-ms columns to timestamptz and rename
+    _MS_RENAMES = {"received_at_ms": "received_at", "book_time_ms": "book_time"}
+    for old_name, new_name in _MS_RENAMES.items():
+        if old_name in table.column_names:
+            idx = table.column_names.index(old_name)
+            converted = epoch_ms_to_timestamp(table.column(old_name))
+            table = table.set_column(idx, new_name, converted)
+            diagnostics.append(f"Converted {old_name} to timestamptz as {new_name}")
 
     # Drop original JSON columns
     to_drop = [c for c in ("bids_json", "asks_json") if c in table.column_names]

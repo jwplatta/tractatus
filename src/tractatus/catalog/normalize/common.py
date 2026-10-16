@@ -7,6 +7,15 @@ import pyarrow.compute as pc
 from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.schema import Schema
 
+_TS_US_UTC = pa.timestamp("us", tz="UTC")
+
+
+def epoch_ms_to_timestamp(col: pa.Array) -> pa.Array:
+    """Convert an int64 epoch-milliseconds column to timestamp[us, tz=UTC]."""
+    # millis → micros, then interpret as timestamp
+    micros = pc.multiply(col.cast(pa.int64()), 1000)
+    return micros.cast(_TS_US_UTC)
+
 
 def get_canonical(schema: Schema) -> tuple[list[str], dict[str, pa.DataType]]:
     """Derive canonical column names and Arrow types from an Iceberg schema."""
