@@ -32,22 +32,22 @@ def _make_31col_table(
             if pa.types.is_string(expiration_date_type):
                 arrays[col] = pa.array(["2026-06-25"] * n_rows, type=pa.string())
             else:
-                arrays[col] = pa.array([datetime.date(2026, 6, 25)] * n_rows, type=pa.date32())
-        elif pa.types.is_string(target):
-            arrays[col] = pa.array(["x"] * n_rows, type=pa.string())
+                arrays[col] = pa.array([datetime.date(2026, 6, 25)] * n_rows, type=target)
+        elif pa.types.is_string(target) or pa.types.is_large_string(target):
+            arrays[col] = pa.array(["x"] * n_rows, type=target)
         elif pa.types.is_floating(target):
-            arrays[col] = pa.array([1.0] * n_rows, type=pa.float64())
+            arrays[col] = pa.array([1.0] * n_rows, type=target)
         elif pa.types.is_integer(target):
-            arrays[col] = pa.array([1] * n_rows, type=pa.int64())
+            arrays[col] = pa.array([1] * n_rows, type=target)
         elif pa.types.is_boolean(target):
-            arrays[col] = pa.array([True] * n_rows, type=pa.bool_())
+            arrays[col] = pa.array([True] * n_rows, type=target)
         elif pa.types.is_timestamp(target):
             arrays[col] = pa.array(
                 [datetime.datetime(2026, 6, 25, 12, 0, tzinfo=datetime.UTC)] * n_rows,
-                type=pa.timestamp("us", tz="UTC"),
+                type=target,
             )
         elif pa.types.is_date(target):
-            arrays[col] = pa.array([datetime.date(2026, 6, 25)] * n_rows, type=pa.date32())
+            arrays[col] = pa.array([datetime.date(2026, 6, 25)] * n_rows, type=target)
     return pa.table(arrays)
 
 
@@ -56,21 +56,21 @@ def _make_41col_table(n_rows: int = 3) -> pa.Table:
     arrays: dict[str, pa.Array] = {}
     for col in CANONICAL_COLUMNS:
         target = CANONICAL_ARROW_TYPES[col]
-        if pa.types.is_string(target):
-            arrays[col] = pa.array(["x"] * n_rows, type=pa.string())
+        if pa.types.is_string(target) or pa.types.is_large_string(target):
+            arrays[col] = pa.array(["x"] * n_rows, type=target)
         elif pa.types.is_floating(target):
-            arrays[col] = pa.array([1.0] * n_rows, type=pa.float64())
+            arrays[col] = pa.array([1.0] * n_rows, type=target)
         elif pa.types.is_integer(target):
-            arrays[col] = pa.array([1] * n_rows, type=pa.int64())
+            arrays[col] = pa.array([1] * n_rows, type=target)
         elif pa.types.is_boolean(target):
-            arrays[col] = pa.array([True] * n_rows, type=pa.bool_())
+            arrays[col] = pa.array([True] * n_rows, type=target)
         elif pa.types.is_timestamp(target):
             arrays[col] = pa.array(
                 [datetime.datetime(2026, 6, 25, 12, 0, tzinfo=datetime.UTC)] * n_rows,
-                type=pa.timestamp("us", tz="UTC"),
+                type=target,
             )
         elif pa.types.is_date(target):
-            arrays[col] = pa.array([datetime.date(2026, 6, 25)] * n_rows, type=pa.date32())
+            arrays[col] = pa.array([datetime.date(2026, 6, 25)] * n_rows, type=target)
     return pa.table(arrays)
 
 

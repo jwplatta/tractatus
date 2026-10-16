@@ -2,6 +2,9 @@
 
 Handles legacy (31-column) and current (41-column) layouts by casting types,
 adding missing columns, and applying fallback logic for timestamp fields.
+
+Column names and Arrow types are derived from the Iceberg schema defined in
+``schema.py`` so there is a single source of truth.
 """
 
 from __future__ import annotations
@@ -11,96 +14,14 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+from pyiceberg.io.pyarrow import schema_to_pyarrow
 
-# Canonical column order matching schema.py field_id order.
-CANONICAL_COLUMNS: list[str] = [
-    "contract_type",
-    "symbol",
-    "description",
-    "strike",
-    "expiration_date",
-    "open",
-    "high",
-    "low",
-    "close",
-    "mark",
-    "bid",
-    "bid_size",
-    "ask",
-    "ask_size",
-    "last",
-    "last_size",
-    "open_interest",
-    "total_volume",
-    "transactions",
-    "delta",
-    "gamma",
-    "theta",
-    "vega",
-    "rho",
-    "volatility",
-    "theoretical_volatility",
-    "theoretical_option_value",
-    "intrinsic_value",
-    "extrinsic_value",
-    "underlying_price",
-    "sampled_at",
-    "trade_at",
-    "quote_at",
-    "time_value",
-    "net_change",
-    "percent_change",
-    "settlement_type",
-    "exercise_type",
-    "expiration_type",
-    "multiplier",
-    "non_standard",
-]
+from tractatus.catalog.schema import OPTIONS_TABLE
 
-# Arrow types for each canonical column.
-CANONICAL_ARROW_TYPES: dict[str, pa.DataType] = {
-    "contract_type": pa.string(),
-    "symbol": pa.string(),
-    "description": pa.string(),
-    "strike": pa.float64(),
-    "expiration_date": pa.date32(),
-    "open": pa.float64(),
-    "high": pa.float64(),
-    "low": pa.float64(),
-    "close": pa.float64(),
-    "mark": pa.float64(),
-    "bid": pa.float64(),
-    "bid_size": pa.int64(),
-    "ask": pa.float64(),
-    "ask_size": pa.int64(),
-    "last": pa.float64(),
-    "last_size": pa.float64(),
-    "open_interest": pa.float64(),
-    "total_volume": pa.float64(),
-    "transactions": pa.int64(),
-    "delta": pa.float64(),
-    "gamma": pa.float64(),
-    "theta": pa.float64(),
-    "vega": pa.float64(),
-    "rho": pa.float64(),
-    "volatility": pa.float64(),
-    "theoretical_volatility": pa.float64(),
-    "theoretical_option_value": pa.float64(),
-    "intrinsic_value": pa.float64(),
-    "extrinsic_value": pa.float64(),
-    "underlying_price": pa.float64(),
-    "sampled_at": pa.timestamp("us", tz="UTC"),
-    "trade_at": pa.timestamp("us", tz="UTC"),
-    "quote_at": pa.timestamp("us", tz="UTC"),
-    "time_value": pa.float64(),
-    "net_change": pa.float64(),
-    "percent_change": pa.float64(),
-    "settlement_type": pa.string(),
-    "exercise_type": pa.string(),
-    "expiration_type": pa.string(),
-    "multiplier": pa.float64(),
-    "non_standard": pa.bool_(),
-}
+# Derive canonical columns and Arrow types from the Iceberg schema.
+_ARROW_SCHEMA: pa.Schema = schema_to_pyarrow(OPTIONS_TABLE.schema)
+CANONICAL_COLUMNS: list[str] = _ARROW_SCHEMA.names
+CANONICAL_ARROW_TYPES: dict[str, pa.DataType] = {f.name: f.type for f in _ARROW_SCHEMA}
 
 
 def normalize_table(table: pa.Table) -> tuple[pa.Table, list[str]]:
