@@ -194,6 +194,20 @@ class Ledger:
             )
             self._conn.commit()
 
+    def mark_discovered_for_retry(self, path: str, table_name: str) -> None:
+        """Reset a file to discovered status after commit failure cleanup.
+
+        Clears s3_key, uploaded_at, committed_at, and error so the full
+        upload → commit cycle will be retried on the next run.
+        """
+        now = self._now()
+        self._execute(
+            "UPDATE catalog_files SET status = 'discovered', s3_key = NULL, "
+            "uploaded_at = NULL, committed_at = NULL, error = NULL, updated_at = %s "
+            "WHERE path = %s AND table_name = %s",
+            (now, path, table_name),
+        )
+
     def mark_error(self, path: str, table_name: str, error: str) -> None:
         """Record an error for a file."""
         now = self._now()

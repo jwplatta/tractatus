@@ -57,10 +57,14 @@ def test_discover_only_dry_run(tmp_path: Path) -> None:
     assert result.committed == 0
 
 
+@patch("tractatus.catalog.publisher.normalize_parquet", return_value=[])
 @patch("tractatus.catalog.publisher.load_catalog")
 @patch("tractatus.catalog.publisher.boto3.Session")
 def test_full_pipeline(
-    mock_session_cls: MagicMock, mock_load_catalog: MagicMock, tmp_path: Path
+    mock_session_cls: MagicMock,
+    mock_load_catalog: MagicMock,
+    _mock_normalize: MagicMock,
+    tmp_path: Path,
 ) -> None:
     config = _make_config(tmp_path)
     _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
@@ -87,8 +91,11 @@ def test_full_pipeline(
     mock_table.add_files.assert_called_once()
 
 
+@patch("tractatus.catalog.publisher.normalize_parquet", return_value=[])
 @patch("tractatus.catalog.publisher.boto3.Session")
-def test_upload_error_marks_file(mock_session_cls: MagicMock, tmp_path: Path) -> None:
+def test_upload_error_marks_file(
+    mock_session_cls: MagicMock, _mock_normalize: MagicMock, tmp_path: Path
+) -> None:
     config = _make_config(tmp_path)
     _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
 
@@ -106,10 +113,14 @@ def test_upload_error_marks_file(mock_session_cls: MagicMock, tmp_path: Path) ->
     assert result.errors == 1
 
 
+@patch("tractatus.catalog.publisher.normalize_parquet", return_value=[])
 @patch("tractatus.catalog.publisher.load_catalog")
 @patch("tractatus.catalog.publisher.boto3.Session")
 def test_commit_error_marks_files(
-    mock_session_cls: MagicMock, mock_load_catalog: MagicMock, tmp_path: Path
+    mock_session_cls: MagicMock,
+    mock_load_catalog: MagicMock,
+    _mock_normalize: MagicMock,
+    tmp_path: Path,
 ) -> None:
     config = _make_config(tmp_path)
     _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
@@ -143,10 +154,14 @@ def test_unknown_table_raises(tmp_path: Path) -> None:
         publisher.close()
 
 
+@patch("tractatus.catalog.publisher.normalize_parquet", return_value=[])
 @patch("tractatus.catalog.publisher.load_catalog")
 @patch("tractatus.catalog.publisher.boto3.Session")
 def test_bounded_publish_leaves_out_of_scope_rows(
-    mock_session_cls: MagicMock, mock_load_catalog: MagicMock, tmp_path: Path
+    mock_session_cls: MagicMock,
+    mock_load_catalog: MagicMock,
+    _mock_normalize: MagicMock,
+    tmp_path: Path,
 ) -> None:
     """A date-bounded publish must not upload or commit out-of-scope pending rows."""
     config = _make_config(tmp_path)
@@ -190,10 +205,14 @@ def test_bounded_publish_leaves_out_of_scope_rows(
     ledger.close()
 
 
+@patch("tractatus.catalog.publisher.normalize_parquet", return_value=[])
 @patch("tractatus.catalog.publisher.load_catalog")
 @patch("tractatus.catalog.publisher.boto3.Session")
 def test_bounded_publish_provider_filter(
-    mock_session_cls: MagicMock, mock_load_catalog: MagicMock, tmp_path: Path
+    mock_session_cls: MagicMock,
+    mock_load_catalog: MagicMock,
+    _mock_normalize: MagicMock,
+    tmp_path: Path,
 ) -> None:
     """A provider-bounded publish must not upload out-of-scope provider rows."""
     config = _make_config(tmp_path)
@@ -226,6 +245,90 @@ def test_bounded_publish_provider_filter(
     tradier_record = ledger.get("tradier/2026/10/15/SPX_samples_2026-10-15.parquet", "options")
     assert tradier_record is not None
     assert tradier_record.status == "discovered"
+    ledger.close()
+
+
+@patch("tractatus.catalog.publisher.normalize_parquet", return_value=[])
+@patch("tractatus.catalog.publisher.load_catalog")
+@patch("tractatus.catalog.publisher.boto3.Session")
+def test_commit_failure_cleans_up_s3(
+    mock_session_cls: MagicMock,
+    mock_load_catalog: MagicMock,
+    _mock_normalize: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """On commit failure, orphaned S3 objects are deleted and records reset to discovered."""
+    config = _make_config(tmp_path)
+    _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
+
+    mock_s3 = MagicMock()
+    mock_s3.head_object.side_effect = Exception("Not found")
+    mock_session_cls.return_value.client.return_value = mock_s3
+
+    mock_table = MagicMock()
+    mock_table.add_files.side_effect = Exception("Iceberg error")
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    result = publisher.run(table_name="options")
+    publisher.close()
+
+    assert result.uploaded == 1
+    assert result.committed == 0
+    assert result.errors == 1
+
+    # S3 delete should have been called for the orphaned object
+    mock_s3.delete_object.assert_called_once()
+
+    # Record should be reset to discovered (not error) for retry
+    ledger = Ledger(config.database_url)
+    record = ledger.get("schwab/2026/06/25/SPX_samples_2026-06-25.parquet", "options")
+    assert record is not None
+    assert record.status == "discovered"
+    assert record.s3_key is None
+    ledger.close()
+
+
+@patch("tractatus.catalog.publisher.normalize_parquet", return_value=[])
+@patch("tractatus.catalog.publisher.load_catalog")
+@patch("tractatus.catalog.publisher.boto3.Session")
+def test_commit_failure_partial_cleanup(
+    mock_session_cls: MagicMock,
+    mock_load_catalog: MagicMock,
+    _mock_normalize: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """When S3 cleanup also fails, record stays in error with orphan info."""
+    config = _make_config(tmp_path)
+    _create_parquet(config.data_root, "options", "schwab", date(2026, 6, 25), "SPX")
+
+    mock_s3 = MagicMock()
+    mock_s3.head_object.side_effect = Exception("Not found")
+    # delete_object fails — orphan cannot be cleaned
+    mock_s3.delete_object.side_effect = Exception("Access denied")
+    mock_session_cls.return_value.client.return_value = mock_s3
+
+    mock_table = MagicMock()
+    mock_table.add_files.side_effect = Exception("Iceberg error")
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    result = publisher.run(table_name="options")
+    publisher.close()
+
+    assert result.committed == 0
+    assert result.errors == 1
+
+    # Record should be in error state with orphan info
+    ledger = Ledger(config.database_url)
+    record = ledger.get("schwab/2026/06/25/SPX_samples_2026-06-25.parquet", "options")
+    assert record is not None
+    assert record.status == "error"
+    assert "orphan cleanup failed" in record.error  # type: ignore[operator]
     ledger.close()
 
 
