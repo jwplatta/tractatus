@@ -45,12 +45,7 @@ LEVEL_ONE_FUTURES_TABLE = TableDef(
         NestedField(field_id=100, name="ask_id", field_type=StringType(), required=False),
         NestedField(field_id=101, name="bid_id", field_type=StringType(), required=False),
         NestedField(field_id=102, name="last_size", field_type=LongType(), required=False),
-        NestedField(
-            field_id=103, name="quote_time_millis", field_type=TimestamptzType(), required=False
-        ),
-        NestedField(
-            field_id=104, name="trade_time_millis", field_type=TimestamptzType(), required=False
-        ),
+        # Fields 10, 11 are extracted by tickrake to top-level quote_time_ms, trade_time_ms.
         NestedField(field_id=105, name="high_price", field_type=DoubleType(), required=False),
         NestedField(field_id=106, name="low_price", field_type=DoubleType(), required=False),
         NestedField(field_id=107, name="close_price", field_type=DoubleType(), required=False),
@@ -65,7 +60,7 @@ LEVEL_ONE_FUTURES_TABLE = TableDef(
         NestedField(field_id=114, name="exchange_name", field_type=StringType(), required=False),
         NestedField(field_id=115, name="security_status", field_type=StringType(), required=False),
         NestedField(field_id=116, name="open_interest", field_type=LongType(), required=False),
-        NestedField(field_id=117, name="mark_price", field_type=DoubleType(), required=False),
+        # Field 24 is extracted by tickrake to top-level mark.
         NestedField(field_id=118, name="tick", field_type=DoubleType(), required=False),
         NestedField(field_id=119, name="tick_amount", field_type=DoubleType(), required=False),
         NestedField(field_id=120, name="product", field_type=StringType(), required=False),
@@ -104,6 +99,8 @@ LEVEL_ONE_FUTURES_TABLE = TableDef(
         NestedField(field_id=131, name="bid_mic_id", field_type=StringType(), required=False),
         NestedField(field_id=132, name="last_mic_id", field_type=StringType(), required=False),
         NestedField(field_id=133, name="settlement_date", field_type=StringType(), required=False),
+        # Residual extra_json — unmapped keys preserved as raw JSON string.
+        NestedField(field_id=200, name="extra_json", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -120,8 +117,7 @@ EXTRA_JSON_FIELDS: dict[str, str] = {
     "6": "ask_id",
     "7": "bid_id",
     "9": "last_size",
-    "10": "quote_time_millis",
-    "11": "trade_time_millis",
+    # 10, 11 are extracted by tickrake to top-level quote_time_ms, trade_time_ms.
     "12": "high_price",
     "13": "low_price",
     "14": "close_price",
@@ -134,7 +130,7 @@ EXTRA_JSON_FIELDS: dict[str, str] = {
     "21": "exchange_name",
     "22": "security_status",
     "23": "open_interest",
-    "24": "mark_price",
+    # 24 is extracted by tickrake to top-level mark.
     "25": "tick",
     "26": "tick_amount",
     "27": "product",
@@ -156,7 +152,4 @@ EXTRA_JSON_FIELDS: dict[str, str] = {
 }
 
 # Extra_json fields that are epoch-ms timestamps — need conversion.
-TIMESTAMP_FIELDS: set[str] = {
-    "quote_time_millis",
-    "trade_time_millis",
-}
+TIMESTAMP_FIELDS: set[str] = set()

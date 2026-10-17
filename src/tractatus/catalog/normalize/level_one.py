@@ -46,7 +46,11 @@ def _unpack_extra_json(
     canonical_types: dict[str, pa.DataType],
     timestamp_fields: set[str],
 ) -> tuple[pa.Table, list[str]]:
-    """Parse extra_json and add flat columns per the field map."""
+    """Parse extra_json and add flat columns per the field map.
+
+    Mapped keys are promoted to typed columns. Unmapped keys are preserved
+    as a residual JSON string in ``extra_json`` so no data is silently lost.
+    """
     diagnostics: list[str] = []
     n_rows = len(table)
 
@@ -55,26 +59,31 @@ def _unpack_extra_json(
 
     extra_col = table.column("extra_json")
 
-    # Collect values per target column
+    # Collect values per target column + residual JSON
     columns: dict[str, list[object]] = {col_name: [] for col_name in field_map.values()}
+    residuals: list[str | None] = []
+    mapped_keys = set(field_map.keys())
 
     for i in range(n_rows):
         val = extra_col[i].as_py()
         if val is None:
             for lst in columns.values():
                 lst.append(None)
+            residuals.append(None)
             continue
 
         data = json.loads(val)
         for json_key, col_name in field_map.items():
             columns[col_name].append(data.get(json_key))
 
-    # Add columns to table
+        # Preserve unmapped keys
+        remaining = {k: v for k, v in data.items() if k not in mapped_keys}
+        residuals.append(json.dumps(remaining) if remaining else None)
+
+    # Add promoted columns
     for col_name, values in columns.items():
         target_type = canonical_types[col_name]
-        # Timestamp fields: convert epoch-ms int values to timestamptz
         if col_name in timestamp_fields:
-            # Build int array first, then convert
             int_arr = pa.array(values, type=pa.int64())
             arr = epoch_ms_to_timestamp(int_arr)
         else:
@@ -83,8 +92,9 @@ def _unpack_extra_json(
 
     diagnostics.append(f"Unpacked {len(field_map)} fields from extra_json")
 
-    # Drop original extra_json
-    table = table.drop(["extra_json"])
+    # Replace extra_json with residual (unmapped keys only)
+    idx = table.column_names.index("extra_json")
+    table = table.set_column(idx, "extra_json", pa.array(residuals, type=pa.large_string()))
 
     return table, diagnostics
 
