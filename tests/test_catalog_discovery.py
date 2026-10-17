@@ -116,14 +116,29 @@ def _create_fundamentals(base: Path, provider: str, d: date) -> Path:
     return path
 
 
-def test_discover_level_one(tmp_path: Path) -> None:
+def test_discover_level_one_equities(tmp_path: Path) -> None:
     _create_level_one(tmp_path, "schwab", date(2026, 10, 15), "SPY")
     _create_level_one(tmp_path, "schwab", date(2026, 10, 15), "QQQ")
+    # Futures file should be excluded
+    _create_level_one(tmp_path, "schwab", date(2026, 10, 15), "^ES")
 
-    files = discover_files(tmp_path, table_name="level_one")
+    files = discover_files(tmp_path, table_name="level_one_equities")
     assert len(files) == 2
     roots = {f.root for f in files}
     assert roots == {"SPY", "QQQ"}
+    assert all(f.sample_date == date(2026, 10, 15) for f in files)
+
+
+def test_discover_level_one_futures(tmp_path: Path) -> None:
+    _create_level_one(tmp_path, "schwab", date(2026, 10, 15), "^ES")
+    _create_level_one(tmp_path, "schwab", date(2026, 10, 15), "^NQ")
+    # Equities file should be excluded
+    _create_level_one(tmp_path, "schwab", date(2026, 10, 15), "SPY")
+
+    files = discover_files(tmp_path, table_name="level_one_futures")
+    assert len(files) == 2
+    roots = {f.root for f in files}
+    assert roots == {"^ES", "^NQ"}
     assert all(f.sample_date == date(2026, 10, 15) for f in files)
 
 

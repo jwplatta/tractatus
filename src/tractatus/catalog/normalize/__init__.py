@@ -13,7 +13,10 @@ import pyarrow.parquet as pq
 
 from tractatus.catalog.normalize.candles import normalize_candles
 from tractatus.catalog.normalize.fundamentals import normalize_fundamentals
-from tractatus.catalog.normalize.level_one import normalize_level_one
+from tractatus.catalog.normalize.level_one import (
+    normalize_level_one_equities,
+    normalize_level_one_futures,
+)
 from tractatus.catalog.normalize.options import normalize_options
 from tractatus.catalog.normalize.order_book import normalize_order_book
 
@@ -38,8 +41,10 @@ def normalize_table(
     """
     if table_name == "options":
         return normalize_options(table)
-    if table_name == "level_one":
-        return normalize_level_one(table, sample_date=sample_date)
+    if table_name == "level_one_equities":
+        return normalize_level_one_equities(table, sample_date=sample_date)
+    if table_name == "level_one_futures":
+        return normalize_level_one_futures(table, sample_date=sample_date)
     if table_name == "order_book":
         return normalize_order_book(table, sample_date=sample_date)
     if table_name == "candles":

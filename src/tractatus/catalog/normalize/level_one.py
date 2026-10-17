@@ -1,7 +1,8 @@
-"""Level-one normalization.
+"""Level-one normalization for equities and futures.
 
-Parses ``extra_json``, promotes high-value fields to top-level columns,
-and packs the rest into a nullable ``extra`` struct.
+Parses ``extra_json`` into flat columns with proper Schwab API field names.
+Separate normalizer entry points for equities and futures since the field
+numbering has different semantics per service type.
 """
 
 from __future__ import annotations
@@ -10,128 +11,154 @@ import json
 from datetime import date as date_type
 
 import pyarrow as pa
-import pyarrow.compute as pc
 
-from tractatus.catalog.normalize.common import align_to_schema, epoch_ms_to_timestamp, get_canonical
-from tractatus.catalog.schemas.level_one import (
-    _EXTRA_STRUCT,
-    EXTRA_STRUCT_FIELDS,
-    LEVEL_ONE_TABLE,
-    PROMOTED_FIELDS,
+from tractatus.catalog.normalize.common import (
+    align_to_schema,
+    epoch_ms_to_timestamp,
+    get_canonical,
+)
+from tractatus.catalog.schemas.level_one_equities import (
+    EXTRA_JSON_FIELDS as EQ_FIELDS,
+)
+from tractatus.catalog.schemas.level_one_equities import (
+    LEVEL_ONE_EQUITIES_TABLE,
+)
+from tractatus.catalog.schemas.level_one_equities import (
+    TIMESTAMP_FIELDS as EQ_TS_FIELDS,
+)
+from tractatus.catalog.schemas.level_one_futures import (
+    EXTRA_JSON_FIELDS as FUT_FIELDS,
+)
+from tractatus.catalog.schemas.level_one_futures import (
+    LEVEL_ONE_FUTURES_TABLE,
+)
+from tractatus.catalog.schemas.level_one_futures import (
+    TIMESTAMP_FIELDS as FUT_TS_FIELDS,
 )
 
-_COLUMNS, _TYPES = get_canonical(LEVEL_ONE_TABLE.schema)
-
-# Build a lookup from struct field name → pyarrow type for the extra struct.
-_STRUCT_FIELD_TYPES: dict[str, pa.DataType] = {}
-for field in _EXTRA_STRUCT.fields:
-    _STRUCT_FIELD_TYPES[field.name] = (
-        pa.large_string()
-        if field.field_type.__class__.__name__ == "StringType"
-        else pa.float64()
-        if field.field_type.__class__.__name__ == "DoubleType"
-        else pa.int64()
-        if field.field_type.__class__.__name__ == "LongType"
-        else pa.bool_()
-        if field.field_type.__class__.__name__ == "BooleanType"
-        else pa.large_string()
-    )
-
-_EXTRA_ARROW_TYPE = _TYPES["extra"]
-_STRUCT_FIELD_NAMES = [f.name for f in _EXTRA_STRUCT.fields]
+_EQ_COLUMNS, _EQ_TYPES = get_canonical(LEVEL_ONE_EQUITIES_TABLE.schema)
+_FUT_COLUMNS, _FUT_TYPES = get_canonical(LEVEL_ONE_FUTURES_TABLE.schema)
 
 
-def _parse_extra_json(
-    extra_json_col: pa.Array, n_rows: int
-) -> tuple[dict[str, list[object]], list[dict[str, object] | None]]:
-    """Parse extra_json column into promoted fields and struct dicts."""
-    promoted: dict[str, list[object]] = {name: [] for name in PROMOTED_FIELDS.values()}
-    structs: list[dict[str, object] | None] = []
-
-    for i in range(n_rows):
-        val = extra_json_col[i].as_py()
-        if val is None:
-            for lst in promoted.values():
-                lst.append(None)
-            structs.append(None)
-            continue
-
-        data = json.loads(val)
-
-        # Promoted fields
-        for json_key, col_name in PROMOTED_FIELDS.items():
-            promoted[col_name].append(data.get(json_key))
-
-        # Struct fields
-        struct_dict: dict[str, object] = {}
-        for json_key, field_name in EXTRA_STRUCT_FIELDS.items():
-            if json_key in data:
-                struct_dict[field_name] = data[json_key]
-            else:
-                struct_dict[field_name] = None
-        structs.append(struct_dict)
-
-    return promoted, structs
-
-
-def normalize_level_one(
-    table: pa.Table, sample_date: date_type | None = None
+def _unpack_extra_json(
+    table: pa.Table,
+    field_map: dict[str, str],
+    canonical_types: dict[str, pa.DataType],
+    timestamp_fields: set[str],
 ) -> tuple[pa.Table, list[str]]:
-    """Normalize a level_one Arrow table to the canonical schema."""
+    """Parse extra_json and add flat columns per the field map."""
     diagnostics: list[str] = []
     n_rows = len(table)
 
-    # Parse extra_json into promoted columns and struct column
-    if "extra_json" in table.column_names:
-        extra_col = table.column("extra_json")
-        promoted, struct_dicts = _parse_extra_json(extra_col, n_rows)
+    if "extra_json" not in table.column_names:
+        return table, diagnostics
 
-        # Add promoted columns
-        for col_name, values in promoted.items():
-            arr = pa.array(values, type=_TYPES[col_name])
-            table = table.append_column(col_name, arr)
-        diagnostics.append("Promoted fields from extra_json")
+    extra_col = table.column("extra_json")
 
-        # Build struct column
-        struct_arrays = pa.array(struct_dicts, type=_EXTRA_ARROW_TYPE)
-        table = table.append_column("extra", struct_arrays)
-        diagnostics.append("Built extra struct from extra_json")
+    # Collect values per target column
+    columns: dict[str, list[object]] = {col_name: [] for col_name in field_map.values()}
 
-        # Drop original extra_json
-        table = table.drop(["extra_json"])
+    for i in range(n_rows):
+        val = extra_col[i].as_py()
+        if val is None:
+            for lst in columns.values():
+                lst.append(None)
+            continue
 
-    # Convert epoch-ms columns to timestamptz and rename
-    _MS_RENAMES = {
+        data = json.loads(val)
+        for json_key, col_name in field_map.items():
+            columns[col_name].append(data.get(json_key))
+
+    # Add columns to table
+    for col_name, values in columns.items():
+        target_type = canonical_types[col_name]
+        # Timestamp fields: convert epoch-ms int values to timestamptz
+        if col_name in timestamp_fields:
+            # Build int array first, then convert
+            int_arr = pa.array(values, type=pa.int64())
+            arr = epoch_ms_to_timestamp(int_arr)
+        else:
+            arr = pa.array(values, type=target_type)
+        table = table.append_column(col_name, arr)
+
+    diagnostics.append(f"Unpacked {len(field_map)} fields from extra_json")
+
+    # Drop original extra_json
+    table = table.drop(["extra_json"])
+
+    return table, diagnostics
+
+
+def _convert_source_timestamps(
+    table: pa.Table,
+) -> tuple[pa.Table, list[str]]:
+    """Convert source parquet epoch-ms columns to timestamptz and rename."""
+    diagnostics: list[str] = []
+    renames = {
         "received_at_ms": "received_at",
         "quote_time_ms": "quote_time",
         "trade_time_ms": "trade_time",
     }
-    for old_name, new_name in _MS_RENAMES.items():
+    for old_name, new_name in renames.items():
         if old_name in table.column_names:
             idx = table.column_names.index(old_name)
             converted = epoch_ms_to_timestamp(table.column(old_name))
             table = table.set_column(idx, new_name, converted)
             diagnostics.append(f"Converted {old_name} to timestamptz as {new_name}")
+    return table, diagnostics
 
-    # Convert promoted epoch-ms fields (36, 37, 38) to timestamptz
-    _TS_US_UTC = pa.timestamp("us", tz="UTC")
-    for col_name in ("quote_timestamp", "ask_timestamp", "trade_timestamp"):
-        if col_name in table.column_names:
-            col = table.column(col_name)
-            if pa.types.is_integer(col.type):
-                micros = pc.multiply(col.cast(pa.int64()), 1000)
-                converted = micros.cast(_TS_US_UTC)
-                table = table.set_column(table.column_names.index(col_name), col_name, converted)
-                diagnostics.append(f"Converted {col_name} from epoch-ms to timestamptz")
 
-    # Add sample_date from caller
+def normalize_level_one_equities(
+    table: pa.Table, sample_date: date_type | None = None
+) -> tuple[pa.Table, list[str]]:
+    """Normalize a level_one equities Arrow table to the canonical schema."""
+    diagnostics: list[str] = []
+    n_rows = len(table)
+
+    # Convert source parquet timestamp columns
+    table, ts_diags = _convert_source_timestamps(table)
+    diagnostics.extend(ts_diags)
+
+    # Unpack extra_json into flat columns
+    table, json_diags = _unpack_extra_json(table, EQ_FIELDS, _EQ_TYPES, EQ_TS_FIELDS)
+    diagnostics.extend(json_diags)
+
+    # Add sample_date
     if sample_date is not None and "sample_date" not in table.column_names:
         date_arr = pa.array([sample_date] * n_rows, type=pa.date32())
         table = table.append_column("sample_date", date_arr)
         diagnostics.append("Added sample_date from file path")
 
     # Align to canonical schema
-    table, align_diags = align_to_schema(table, _COLUMNS, _TYPES)
+    table, align_diags = align_to_schema(table, _EQ_COLUMNS, _EQ_TYPES)
+    diagnostics.extend(align_diags)
+
+    return table, diagnostics
+
+
+def normalize_level_one_futures(
+    table: pa.Table, sample_date: date_type | None = None
+) -> tuple[pa.Table, list[str]]:
+    """Normalize a level_one futures Arrow table to the canonical schema."""
+    diagnostics: list[str] = []
+    n_rows = len(table)
+
+    # Convert source parquet timestamp columns
+    table, ts_diags = _convert_source_timestamps(table)
+    diagnostics.extend(ts_diags)
+
+    # Unpack extra_json into flat columns
+    table, json_diags = _unpack_extra_json(table, FUT_FIELDS, _FUT_TYPES, FUT_TS_FIELDS)
+    diagnostics.extend(json_diags)
+
+    # Add sample_date
+    if sample_date is not None and "sample_date" not in table.column_names:
+        date_arr = pa.array([sample_date] * n_rows, type=pa.date32())
+        table = table.append_column("sample_date", date_arr)
+        diagnostics.append("Added sample_date from file path")
+
+    # Align to canonical schema
+    table, align_diags = align_to_schema(table, _FUT_COLUMNS, _FUT_TYPES)
     diagnostics.extend(align_diags)
 
     return table, diagnostics

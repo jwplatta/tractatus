@@ -11,21 +11,22 @@ import pytest
 from tractatus.catalog.normalize import normalize_table
 
 
-class TestNormalizeLevelOne:
+class TestNormalizeLevelOneEquities:
     def _make_table(self, n_rows: int = 2) -> pa.Table:
         extra_data = json.dumps(
             {
                 "36": 1790349918161,
                 "37": 1790349918162,
                 "38": 1790349918163,
-                "44": 1.61,
-                "45": 0.217,
+                "44": -2.325,
+                "45": -0.81456,
                 "assetMainType": "EQUITY",
                 "assetSubType": "ETF",
                 "cusip": "78462F103",
                 "delayed": False,
                 "6": "Q",
                 "9": 100,
+                "18": 1.5,
             }
         )
         return pa.table(
@@ -46,39 +47,41 @@ class TestNormalizeLevelOne:
             }
         )
 
-    def test_promotes_fields(self) -> None:
+    def test_unpacks_fields_with_proper_names(self) -> None:
         table = self._make_table()
-        result, diags = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
-        # Promoted timestamp fields are converted from epoch-ms to timestamptz
-        qt = result.column("quote_timestamp")[0].as_py()
-        assert isinstance(qt, datetime.datetime)
-        assert qt.tzinfo is not None
-        assert result.column("implied_volatility")[0].as_py() == pytest.approx(1.61)
-        assert result.column("delta")[0].as_py() == pytest.approx(0.217)
+        result, diags = normalize_table(
+            table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert result.column("ask_id")[0].as_py() == "Q"
+        assert result.column("last_size")[0].as_py() == 100
+        assert result.column("net_change")[0].as_py() == pytest.approx(1.5)
+        assert result.column("mark_change")[0].as_py() == pytest.approx(-2.325)
+        assert result.column("mark_change_percent")[0].as_py() == pytest.approx(-0.81456)
         assert result.column("asset_main_type")[0].as_py() == "EQUITY"
+        assert result.column("asset_sub_type")[0].as_py() == "ETF"
         assert result.column("cusip")[0].as_py() == "78462F103"
         assert result.column("delayed")[0].as_py() is False
 
-    def test_builds_extra_struct(self) -> None:
+    def test_converts_timestamp_fields(self) -> None:
         table = self._make_table()
-        result, _ = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
-        extra = result.column("extra")[0].as_py()
-        assert extra["f6"] == "Q"
-        assert extra["f9"] == 100
-
-    def test_adds_sample_date(self) -> None:
-        table = self._make_table()
-        result, _ = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
-        assert result.column("sample_date")[0].as_py() == datetime.date(2026, 10, 15)
-
-    def test_converts_ms_to_timestamps(self) -> None:
-        table = self._make_table()
-        result, diags = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
-        # Source epoch-ms columns are converted and renamed
+        result, _ = normalize_table(
+            table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
+        )
+        # Source epoch-ms columns converted and renamed
         assert "received_at_ms" not in result.column_names
         received = result.column("received_at")[0].as_py()
         assert isinstance(received, datetime.datetime)
-        assert received.tzinfo is not None
+        # Extra_json timestamp fields also converted
+        rmt = result.column("regular_market_trade_time")[0].as_py()
+        assert isinstance(rmt, datetime.datetime)
+        assert rmt.tzinfo is not None
+
+    def test_adds_sample_date(self) -> None:
+        table = self._make_table()
+        result, _ = normalize_table(
+            table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert result.column("sample_date")[0].as_py() == datetime.date(2026, 10, 15)
 
     def test_null_extra_json(self) -> None:
         table = pa.table(
@@ -98,9 +101,52 @@ class TestNormalizeLevelOne:
                 "extra_json": pa.array([None], type=pa.string()),
             }
         )
-        result, _ = normalize_table(table, "level_one", sample_date=datetime.date(2026, 10, 15))
-        assert result.column("quote_timestamp")[0].as_py() is None
-        assert result.column("extra")[0].as_py() is None
+        result, _ = normalize_table(
+            table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert result.column("ask_id")[0].as_py() is None
+        assert result.column("mark_change")[0].as_py() is None
+
+
+class TestNormalizeLevelOneFutures:
+    def _make_table(self) -> pa.Table:
+        extra_data = json.dumps(
+            {
+                "6": "K",
+                "9": 50,
+                "19": -36.0,
+                "assetMainType": "FUTURE",
+                "delayed": False,
+            }
+        )
+        return pa.table(
+            {
+                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "symbol": pa.array(["^ES"], type=pa.string()),
+                "service": pa.array(["LEVELONE_FUTURES"], type=pa.string()),
+                "quote_time_ms": pa.array([2000], type=pa.int64()),
+                "trade_time_ms": pa.array([3000], type=pa.int64()),
+                "bid": pa.array([5600.0], type=pa.float64()),
+                "ask": pa.array([5601.0], type=pa.float64()),
+                "last": pa.array([5600.5], type=pa.float64()),
+                "mark": pa.array([5600.5], type=pa.float64()),
+                "bid_size": pa.array([100], type=pa.int64()),
+                "ask_size": pa.array([200], type=pa.int64()),
+                "volume": pa.array([50000], type=pa.int64()),
+                "extra_json": pa.array([extra_data], type=pa.string()),
+            }
+        )
+
+    def test_unpacks_futures_field_names(self) -> None:
+        table = self._make_table()
+        result, _ = normalize_table(
+            table, "level_one_futures", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert result.column("ask_id")[0].as_py() == "K"
+        assert result.column("last_size")[0].as_py() == 50
+        assert result.column("net_change")[0].as_py() == pytest.approx(-36.0)
+        assert result.column("asset_main_type")[0].as_py() == "FUTURE"
+        assert result.column("delayed")[0].as_py() is False
 
 
 class TestNormalizeOrderBook:

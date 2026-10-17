@@ -13,13 +13,15 @@ from pyiceberg.table import Table
 from tractatus.catalog.schemas._types import TableDef
 from tractatus.catalog.schemas.candles import CANDLES_TABLE
 from tractatus.catalog.schemas.fundamentals import FUNDAMENTALS_TABLE
-from tractatus.catalog.schemas.level_one import LEVEL_ONE_TABLE
+from tractatus.catalog.schemas.level_one_equities import LEVEL_ONE_EQUITIES_TABLE
+from tractatus.catalog.schemas.level_one_futures import LEVEL_ONE_FUTURES_TABLE
 from tractatus.catalog.schemas.options import OPTIONS_TABLE
 from tractatus.catalog.schemas.order_book import ORDER_BOOK_TABLE
 
 TABLE_DEFS: dict[str, TableDef] = {
     OPTIONS_TABLE.name: OPTIONS_TABLE,
-    LEVEL_ONE_TABLE.name: LEVEL_ONE_TABLE,
+    LEVEL_ONE_EQUITIES_TABLE.name: LEVEL_ONE_EQUITIES_TABLE,
+    LEVEL_ONE_FUTURES_TABLE.name: LEVEL_ONE_FUTURES_TABLE,
     ORDER_BOOK_TABLE.name: ORDER_BOOK_TABLE,
     CANDLES_TABLE.name: CANDLES_TABLE,
     FUNDAMENTALS_TABLE.name: FUNDAMENTALS_TABLE,
@@ -28,7 +30,8 @@ TABLE_DEFS: dict[str, TableDef] = {
 __all__ = [
     "CANDLES_TABLE",
     "FUNDAMENTALS_TABLE",
-    "LEVEL_ONE_TABLE",
+    "LEVEL_ONE_EQUITIES_TABLE",
+    "LEVEL_ONE_FUTURES_TABLE",
     "OPTIONS_TABLE",
     "ORDER_BOOK_TABLE",
     "TABLE_DEFS",

@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 from pyiceberg.catalog import Catalog, load_catalog
 
 from tractatus.catalog.config import CatalogConfig
-from tractatus.catalog.discovery import discover_files
+from tractatus.catalog.discovery import data_dir_name, discover_files
 from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_table
 from tractatus.catalog.schemas import TABLE_DEFS
@@ -29,7 +29,7 @@ def _metadata_from_path(
     """Derive (sample_date, symbol, interval) from a file's relative path."""
     parts = PurePosixPath(relative_path).parts
 
-    if table_name in ("level_one", "order_book"):
+    if table_name in ("level_one_equities", "level_one_futures", "order_book"):
         m = _DATE_DIR_RE.search(relative_path)
         if m:
             return date(int(m.group(1)), int(m.group(2)), int(m.group(3))), None, None
@@ -131,7 +131,7 @@ class Publisher:
         before: date | None = None,
     ) -> int:
         """Scan data_root/{table_name} for parquet files and record them in the ledger."""
-        table_dir = self._config.data_root / table_name
+        table_dir = self._config.data_root / data_dir_name(table_name)
         files = discover_files(
             table_dir, table_name=table_name, providers=providers, after=after, before=before
         )
@@ -175,7 +175,7 @@ class Publisher:
         catalog = self._iceberg_catalog()
         full_name = f"{self._config.glue_database}.{table_name}"
         iceberg_table = catalog.load_table(full_name)
-        table_dir = self._config.data_root / table_name
+        table_dir = self._config.data_root / data_dir_name(table_name)
 
         committed = 0
         errors = 0

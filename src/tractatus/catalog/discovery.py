@@ -99,6 +99,20 @@ def _parse_symbol_timestamp(path: Path, data_root: Path) -> tuple[str, str, date
     return provider, symbol, sample_date
 
 
+def _parse_equities_symbol_timestamp(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+    """Equities level-one: same as symbol_timestamp but excludes ^ prefix (futures)."""
+    if path.stem.startswith("^"):
+        return None
+    return _parse_symbol_timestamp(path, data_root)
+
+
+def _parse_futures_symbol_timestamp(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+    """Futures level-one: same as symbol_timestamp but only ^ prefix symbols."""
+    if not path.stem.startswith("^"):
+        return None
+    return _parse_symbol_timestamp(path, data_root)
+
+
 def _parse_candles(path: Path, data_root: Path) -> tuple[str, str, date] | None:
     """Candles: provider/interval/YYYY/SYMBOL.parquet"""
     if not path.name.endswith(".parquet"):
@@ -144,11 +158,23 @@ def _parse_fundamentals(path: Path, data_root: Path) -> tuple[str, str, date] | 
 
 _PARSERS: dict[str, Callable[[Path, Path], tuple[str, str, date] | None]] = {
     "options": _parse_options,
-    "level_one": _parse_symbol_timestamp,
+    "level_one_equities": _parse_equities_symbol_timestamp,
+    "level_one_futures": _parse_futures_symbol_timestamp,
     "order_book": _parse_symbol_timestamp,
     "candles": _parse_candles,
     "fundamentals": _parse_fundamentals,
 }
+
+# When the on-disk directory name differs from the table name.
+_DATA_DIR_NAMES: dict[str, str] = {
+    "level_one_equities": "level_one",
+    "level_one_futures": "level_one",
+}
+
+
+def data_dir_name(table_name: str) -> str:
+    """Return the on-disk directory name for a table (may differ from the table name)."""
+    return _DATA_DIR_NAMES.get(table_name, table_name)
 
 
 def discover_files(
