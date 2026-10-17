@@ -9,6 +9,54 @@ from pyiceberg.schema import Schema
 
 _TS_US_UTC = pa.timestamp("us", tz="UTC")
 
+# Type pairs that are logically equivalent for validation purposes.
+_STRING_TYPES = {pa.string(), pa.large_string()}
+
+
+def _types_compatible(actual: pa.DataType, expected: pa.DataType) -> bool:
+    """Check if two Arrow types are compatible for validation purposes.
+
+    Treats string/large_string as equivalent, and allows date/timestamp
+    variants where one is castable to the other (the normalizer handles casts).
+    """
+    if actual in _STRING_TYPES and expected in _STRING_TYPES:
+        return True
+    # Allow date/timestamp where string is expected (normalizer handles casts)
+    return (pa.types.is_date(actual) or pa.types.is_timestamp(actual)) and expected in _STRING_TYPES
+
+
+def validate_input_schema(
+    table: pa.Table,
+    expected: dict[str, pa.DataType],
+) -> list[str]:
+    """Validate that an input table matches the expected producer schema.
+
+    Raises ``ValueError`` if required columns are missing or have incompatible
+    types. Returns diagnostic warnings for unexpected extra columns.
+    """
+    diagnostics: list[str] = []
+    actual_schema = {f.name: f.type for f in table.schema}
+
+    # Check for missing columns
+    missing = sorted(set(expected) - set(actual_schema))
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(missing)}")
+
+    # Check for type mismatches (string and large_string are treated as compatible)
+    for col_name, expected_type in expected.items():
+        actual_type = actual_schema[col_name]
+        if actual_type != expected_type:
+            if _types_compatible(actual_type, expected_type):
+                continue
+            raise ValueError(f"Column {col_name}: expected {expected_type}, got {actual_type}")
+
+    # Warn about extra columns
+    extra = sorted(set(actual_schema) - set(expected))
+    if extra:
+        diagnostics.append(f"Unexpected extra columns in input: {', '.join(extra)}")
+
+    return diagnostics
+
 
 def epoch_ms_to_timestamp(col: pa.Array) -> pa.Array:
     """Convert an int64 epoch-milliseconds column to timestamp[us, tz=UTC]."""

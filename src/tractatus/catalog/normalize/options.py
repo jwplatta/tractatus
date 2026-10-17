@@ -9,16 +9,27 @@ from __future__ import annotations
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from tractatus.catalog.normalize.common import align_to_schema, get_canonical
+from tractatus.catalog.normalize.common import align_to_schema, get_canonical, validate_input_schema
 from tractatus.catalog.schemas.options import OPTIONS_TABLE
 
 _COLUMNS, _TYPES = get_canonical(OPTIONS_TABLE.schema)
+
+# Key columns from tickrake's base ParquetWriter for options.
+_EXPECTED_INPUT: dict[str, pa.DataType] = {
+    "symbol": pa.string(),
+    "expiration_date": pa.string(),
+    "strike": pa.float64(),
+}
 
 
 def normalize_options(table: pa.Table) -> tuple[pa.Table, list[str]]:
     """Normalize an options Arrow table to the canonical schema."""
     diagnostics: list[str] = []
     source_names = set(table.column_names)
+
+    # Validate input matches tickrake's producer contract
+    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    diagnostics.extend(val_diags)
 
     # Cast expiration_date from string to date32 if needed
     if "expiration_date" in source_names:

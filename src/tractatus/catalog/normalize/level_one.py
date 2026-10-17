@@ -16,6 +16,7 @@ from tractatus.catalog.normalize.common import (
     align_to_schema,
     epoch_ms_to_timestamp,
     get_canonical,
+    validate_input_schema,
 )
 from tractatus.catalog.schemas.level_one_equities import (
     EXTRA_JSON_FIELDS as EQ_FIELDS,
@@ -38,6 +39,23 @@ from tractatus.catalog.schemas.level_one_futures import (
 
 _EQ_COLUMNS, _EQ_TYPES = get_canonical(LEVEL_ONE_EQUITIES_TABLE.schema)
 _FUT_COLUMNS, _FUT_TYPES = get_canonical(LEVEL_ONE_FUTURES_TABLE.schema)
+
+# Expected input schema from tickrake's LevelOneParquetWriter (shared by equities and futures).
+_EXPECTED_INPUT: dict[str, pa.DataType] = {
+    "received_at_ms": pa.int64(),
+    "symbol": pa.string(),
+    "service": pa.string(),
+    "quote_time_ms": pa.int64(),
+    "trade_time_ms": pa.int64(),
+    "bid": pa.float64(),
+    "ask": pa.float64(),
+    "last": pa.float64(),
+    "mark": pa.float64(),
+    "bid_size": pa.int64(),
+    "ask_size": pa.int64(),
+    "volume": pa.int64(),
+    "extra_json": pa.string(),
+}
 
 
 def _unpack_extra_json(
@@ -125,6 +143,10 @@ def normalize_level_one_equities(
     diagnostics: list[str] = []
     n_rows = len(table)
 
+    # Validate input matches tickrake's producer contract
+    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    diagnostics.extend(val_diags)
+
     # Convert source parquet timestamp columns
     table, ts_diags = _convert_source_timestamps(table)
     diagnostics.extend(ts_diags)
@@ -152,6 +174,10 @@ def normalize_level_one_futures(
     """Normalize a level_one futures Arrow table to the canonical schema."""
     diagnostics: list[str] = []
     n_rows = len(table)
+
+    # Validate input matches tickrake's producer contract
+    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    diagnostics.extend(val_diags)
 
     # Convert source parquet timestamp columns
     table, ts_diags = _convert_source_timestamps(table)

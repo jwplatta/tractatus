@@ -11,10 +11,24 @@ from datetime import date as date_type
 
 import pyarrow as pa
 
-from tractatus.catalog.normalize.common import align_to_schema, epoch_ms_to_timestamp, get_canonical
+from tractatus.catalog.normalize.common import (
+    align_to_schema,
+    epoch_ms_to_timestamp,
+    get_canonical,
+    validate_input_schema,
+)
 from tractatus.catalog.schemas.order_book import ORDER_BOOK_TABLE
 
 _COLUMNS, _TYPES = get_canonical(ORDER_BOOK_TABLE.schema)
+
+_EXPECTED_INPUT: dict[str, pa.DataType] = {
+    "received_at_ms": pa.int64(),
+    "symbol": pa.string(),
+    "service": pa.string(),
+    "book_time_ms": pa.int64(),
+    "bids_json": pa.string(),
+    "asks_json": pa.string(),
+}
 
 
 def _parse_book_json(json_col: pa.Array, n_rows: int) -> pa.Array:
@@ -52,6 +66,10 @@ def normalize_order_book(
     """Normalize an order_book Arrow table to the canonical schema."""
     diagnostics: list[str] = []
     n_rows = len(table)
+
+    # Validate input matches tickrake's producer contract
+    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    diagnostics.extend(val_diags)
 
     # Parse JSON columns into nested structs
     for json_col_name, target_col in [("bids_json", "bids"), ("asks_json", "asks")]:
