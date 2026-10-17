@@ -9,12 +9,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from tractatus.catalog.normalize import (
-    CANONICAL_ARROW_TYPES,
-    CANONICAL_COLUMNS,
-    normalize_parquet,
-    normalize_table,
-)
+from tractatus.catalog.normalize import normalize_parquet, normalize_table
+from tractatus.catalog.normalize.options import _COLUMNS as CANONICAL_COLUMNS
+from tractatus.catalog.normalize.options import _TYPES as CANONICAL_ARROW_TYPES
 
 _DEFAULT_DATE32 = pa.date32()
 
