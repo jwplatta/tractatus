@@ -9,11 +9,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import PurePosixPath
 
-import pyarrow.parquet as pq
 from pyiceberg.catalog import Catalog, load_catalog
 
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import data_dir_name, discover_files
+from tractatus.catalog.file_store import FileStore, LocalFileStore, S3FileStore
 from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_table
 from tractatus.catalog.schemas import TABLE_DEFS
@@ -61,6 +61,18 @@ class Publisher:
     def __init__(self, config: CatalogConfig) -> None:
         self._config = config
         self._ledger = Ledger(config.database_url)
+        self._store = self._build_store()
+
+    def _build_store(self) -> FileStore:
+        """Build the appropriate file store from config."""
+        if self._config.minio_endpoint:
+            return S3FileStore(
+                endpoint_url=self._config.minio_endpoint,
+                bucket=self._config.minio_bucket or "",
+                access_key=self._config.minio_access_key or "",
+                secret_key=self._config.minio_secret_key or "",
+            )
+        return LocalFileStore(self._config.data_root)
 
     def close(self) -> None:
         self._ledger.close()
@@ -130,10 +142,9 @@ class Publisher:
         after: date | None = None,
         before: date | None = None,
     ) -> int:
-        """Scan data_root/{table_name} for parquet files and record them in the ledger."""
-        table_dir = self._config.data_root / data_dir_name(table_name)
+        """Scan the file store for parquet files and record them in the ledger."""
         files = discover_files(
-            table_dir, table_name=table_name, providers=providers, after=after, before=before
+            self._store, table_name=table_name, providers=providers, after=after, before=before
         )
         for f in files:
             self._ledger.record_discovered(
@@ -175,29 +186,16 @@ class Publisher:
         catalog = self._iceberg_catalog()
         full_name = f"{self._config.glue_database}.{table_name}"
         iceberg_table = catalog.load_table(full_name)
-        table_dir = self._config.data_root / data_dir_name(table_name)
+        table_prefix = data_dir_name(table_name)
 
         committed = 0
         errors = 0
 
         for record in pending:
-            local_path = table_dir / record.path
-
-            if not local_path.exists():
-                self._ledger.mark_error(record.path, table_name, "Local file not found")
-                logger.error(
-                    {
-                        "event": "append_error",
-                        "table": table_name,
-                        "path": record.path,
-                        "error": "Local file not found",
-                    }
-                )
-                errors += 1
-                continue
+            full_key = f"{table_prefix}/{record.path}"
 
             try:
-                arrow_table = pq.read_table(local_path)
+                arrow_table = self._store.read_parquet(full_key)
                 sample_dt, symbol, interval = _metadata_from_path(record.path, table_name)
                 normalized, diagnostics = normalize_table(
                     arrow_table,
