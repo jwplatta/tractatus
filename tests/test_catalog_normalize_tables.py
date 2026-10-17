@@ -27,6 +27,7 @@ class TestNormalizeLevelOneEquities:
                 "6": "Q",
                 "9": 100,
                 "18": 1.5,
+                "unknownKey": "preserved",
             }
         )
         return pa.table(
@@ -83,6 +84,29 @@ class TestNormalizeLevelOneEquities:
         )
         assert result.column("sample_date")[0].as_py() == datetime.date(2026, 10, 15)
 
+    def test_preserves_unmapped_keys_in_extra_json(self) -> None:
+        table = self._make_table()
+        result, _ = normalize_table(
+            table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
+        )
+        residual = json.loads(result.column("extra_json")[0].as_py())
+        assert residual == {"unknownKey": "preserved"}
+
+    def test_no_duplicate_columns_for_tickrake_extracted_fields(self) -> None:
+        """Fields 33, 34, 35 are extracted by tickrake to mark, quote_time_ms, trade_time_ms.
+        They should NOT produce separate mark_price/quote_time_millis/trade_time_millis columns."""
+        table = self._make_table()
+        result, _ = normalize_table(
+            table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert "mark_price" not in result.column_names
+        assert "quote_time_millis" not in result.column_names
+        assert "trade_time_millis" not in result.column_names
+        # But the top-level mark and converted timestamps should exist
+        assert "mark" in result.column_names
+        assert "quote_time" in result.column_names
+        assert "trade_time" in result.column_names
+
     def test_null_extra_json(self) -> None:
         table = pa.table(
             {
@@ -117,6 +141,7 @@ class TestNormalizeLevelOneFutures:
                 "19": -36.0,
                 "assetMainType": "FUTURE",
                 "delayed": False,
+                "unknownFuturesKey": 42,
             }
         )
         return pa.table(
@@ -147,6 +172,24 @@ class TestNormalizeLevelOneFutures:
         assert result.column("net_change")[0].as_py() == pytest.approx(-36.0)
         assert result.column("asset_main_type")[0].as_py() == "FUTURE"
         assert result.column("delayed")[0].as_py() is False
+
+    def test_no_duplicate_columns_for_tickrake_extracted_fields(self) -> None:
+        """Fields 10, 11, 24 are extracted by tickrake to quote_time_ms, trade_time_ms, mark."""
+        table = self._make_table()
+        result, _ = normalize_table(
+            table, "level_one_futures", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert "quote_time_millis" not in result.column_names
+        assert "trade_time_millis" not in result.column_names
+        assert "mark_price" not in result.column_names
+
+    def test_preserves_unmapped_keys_in_extra_json(self) -> None:
+        table = self._make_table()
+        result, _ = normalize_table(
+            table, "level_one_futures", sample_date=datetime.date(2026, 10, 15)
+        )
+        residual = json.loads(result.column("extra_json")[0].as_py())
+        assert residual == {"unknownFuturesKey": 42}
 
 
 class TestNormalizeOrderBook:

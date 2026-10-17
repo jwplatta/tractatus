@@ -1,16 +1,17 @@
-"""Discover parquet files from the local data directory.
+"""Discover parquet files from a file store (local or S3-compatible).
 
 Supports per-table directory layouts via ``_PARSERS``.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
+from pathlib import PurePosixPath
+
+from tractatus.catalog.file_store import FileStore
 
 _DATE_DIR_PATTERN = re.compile(r"^(\d{4})/(\d{2})/(\d{2})$")
 _OPTIONS_FILENAME = re.compile(r"^(.+)_samples_(\d{4}-\d{2}-\d{2})\.parquet$")
@@ -19,9 +20,8 @@ _SYMBOL_TIMESTAMP = re.compile(r"^(.+?)_\d+Z\.parquet$")
 
 @dataclass
 class DiscoveredFile:
-    """A parquet file found on disk."""
+    """A parquet file found in the store."""
 
-    path: Path
     relative_path: str
     provider: str
     root: str
@@ -30,35 +30,26 @@ class DiscoveredFile:
     size_bytes: int
 
 
-def _sha256(path: Path) -> str:
-    """Compute SHA-256 hex digest by streaming the file."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 # ---------------------------------------------------------------------------
-# Per-table path parsers: (parquet_path, data_root) → (provider, root, date)
+# Per-table key parsers: (relative_key) → (provider, root, date)
+#
+# Keys are relative to the store root and always use forward slashes.
+# The table-specific prefix (e.g. "options/") has already been stripped —
+# keys start with the provider directory.
 # ---------------------------------------------------------------------------
 
 
-def _parse_options(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+def _parse_options(key: str) -> tuple[str, str, date] | None:
     """Options: provider/YYYY/MM/DD/{ROOT}_samples_{YYYY-MM-DD}.parquet"""
-    try:
-        rel = path.parent.relative_to(data_root)
-    except ValueError:
-        return None
-    parts = rel.parts
+    p = PurePosixPath(key)
+    parts = p.parent.parts
     if len(parts) < 4:
         return None
     provider = parts[0]
     date_dir = "/".join(parts[1:4])
     if not _DATE_DIR_PATTERN.match(date_dir):
         return None
-    # Accept any .parquet file in the right directory structure
-    match = _OPTIONS_FILENAME.match(path.name)
+    match = _OPTIONS_FILENAME.match(p.name)
     if match:
         root = match.group(1)
         try:
@@ -66,8 +57,7 @@ def _parse_options(path: Path, data_root: Path) -> tuple[str, str, date] | None:
         except ValueError:
             return None
     else:
-        # Fallback: derive date from directory, root from filename stem
-        root = path.stem
+        root = p.stem
         try:
             sample_date = date(int(parts[1]), int(parts[2]), int(parts[3]))
         except ValueError:
@@ -75,17 +65,14 @@ def _parse_options(path: Path, data_root: Path) -> tuple[str, str, date] | None:
     return provider, root, sample_date
 
 
-def _parse_symbol_timestamp(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+def _parse_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
     """Level-one / order-book: provider/YYYY/MM/DD/SYMBOL_TIMESTAMPZ.parquet"""
-    match = _SYMBOL_TIMESTAMP.match(path.name)
+    p = PurePosixPath(key)
+    match = _SYMBOL_TIMESTAMP.match(p.name)
     if not match:
         return None
     symbol = match.group(1)
-    try:
-        rel = path.parent.relative_to(data_root)
-    except ValueError:
-        return None
-    parts = rel.parts
+    parts = p.parent.parts
     if len(parts) < 4:
         return None
     provider = parts[0]
@@ -99,64 +86,59 @@ def _parse_symbol_timestamp(path: Path, data_root: Path) -> tuple[str, str, date
     return provider, symbol, sample_date
 
 
-def _parse_equities_symbol_timestamp(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+def _parse_equities_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
     """Equities level-one: same as symbol_timestamp but excludes ^ prefix (futures)."""
-    if path.stem.startswith("^"):
+    p = PurePosixPath(key)
+    if p.stem.startswith("^"):
         return None
-    return _parse_symbol_timestamp(path, data_root)
+    return _parse_symbol_timestamp(key)
 
 
-def _parse_futures_symbol_timestamp(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+def _parse_futures_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
     """Futures level-one: same as symbol_timestamp but only ^ prefix symbols."""
-    if not path.stem.startswith("^"):
+    p = PurePosixPath(key)
+    if not p.stem.startswith("^"):
         return None
-    return _parse_symbol_timestamp(path, data_root)
+    return _parse_symbol_timestamp(key)
 
 
-def _parse_candles(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+def _parse_candles(key: str) -> tuple[str, str, date] | None:
     """Candles: provider/interval/YYYY/SYMBOL.parquet"""
-    if not path.name.endswith(".parquet"):
+    p = PurePosixPath(key)
+    if not p.name.endswith(".parquet"):
         return None
-    try:
-        rel = path.relative_to(data_root)
-    except ValueError:
-        return None
-    parts = rel.parts
+    parts = p.parts
     # provider / interval / YYYY / SYMBOL.parquet
     if len(parts) < 4:
         return None
     provider = parts[0]
-    # interval = parts[1]  # stored in path, used by normalizer
     try:
         year = int(parts[2])
     except ValueError:
         return None
-    symbol = path.stem
+    symbol = p.stem
     sample_date = date(year, 1, 1)
     return provider, symbol, sample_date
 
 
-def _parse_fundamentals(path: Path, data_root: Path) -> tuple[str, str, date] | None:
+def _parse_fundamentals(key: str) -> tuple[str, str, date] | None:
     """Fundamentals: provider/YYYY/MM/DD.parquet"""
-    if not path.name.endswith(".parquet"):
+    p = PurePosixPath(key)
+    if not p.name.endswith(".parquet"):
         return None
-    try:
-        rel = path.relative_to(data_root)
-    except ValueError:
-        return None
-    parts = rel.parts
+    parts = p.parts
     # provider / YYYY / MM / DD.parquet
     if len(parts) < 4:
         return None
     provider = parts[0]
     try:
-        sample_date = date(int(parts[1]), int(parts[2]), int(path.stem))
+        sample_date = date(int(parts[1]), int(parts[2]), int(p.stem))
     except ValueError:
         return None
     return provider, "all", sample_date
 
 
-_PARSERS: dict[str, Callable[[Path, Path], tuple[str, str, date] | None]] = {
+_PARSERS: dict[str, Callable[[str], tuple[str, str, date] | None]] = {
     "options": _parse_options,
     "level_one_equities": _parse_equities_symbol_timestamp,
     "level_one_futures": _parse_futures_symbol_timestamp,
@@ -178,20 +160,20 @@ def data_dir_name(table_name: str) -> str:
 
 
 def discover_files(
-    data_root: Path,
+    store: FileStore,
     table_name: str = "options",
     providers: list[str] | None = None,
     after: date | None = None,
     before: date | None = None,
 ) -> list[DiscoveredFile]:
-    """Scan data_root for parquet files matching *table_name*'s layout.
+    """Scan *store* for parquet files matching *table_name*'s layout.
 
     Parameters
     ----------
-    data_root:
-        Root directory containing provider subdirectories.
+    store:
+        File store to scan (local or S3-compatible).
     table_name:
-        Which table's directory layout and path parser to use.
+        Which table's directory layout and key parser to use.
     providers:
         If given, only scan these provider subdirectories.
     after:
@@ -206,49 +188,37 @@ def discover_files(
             f"Known tables: {', '.join(sorted(_PARSERS))}"
         )
 
-    results: list[DiscoveredFile] = []
+    prefix = data_dir_name(table_name)
+    entries = store.list_parquet(prefix, providers=providers)
 
-    if providers:
-        search_dirs = [data_root / p for p in providers]
-    else:
-        search_dirs = (
-            [d for d in sorted(data_root.iterdir()) if d.is_dir()] if data_root.is_dir() else []
+    results: list[DiscoveredFile] = []
+    for full_key, size_bytes in entries:
+        # Strip the table prefix to get the key parsers expect
+        # e.g. "options/schwab/2026/..." → "schwab/2026/..."
+        relative_key = (
+            full_key[len(prefix) + 1 :] if full_key.startswith(prefix + "/") else full_key
         )
 
-    for provider_dir in search_dirs:
-        if not provider_dir.is_dir():
+        parsed = parser(relative_key)
+        if parsed is None:
             continue
-        for parquet_path in sorted(provider_dir.rglob("*.parquet")):
-            if not parquet_path.is_file():
-                continue
 
-            size = parquet_path.stat().st_size
-            if size == 0:
-                continue
+        provider, root, sample_date = parsed
 
-            parsed = parser(parquet_path, data_root)
-            if parsed is None:
-                continue
+        if after is not None and sample_date < after:
+            continue
+        if before is not None and sample_date >= before:
+            continue
 
-            provider, root, sample_date = parsed
-
-            if after is not None and sample_date < after:
-                continue
-            if before is not None and sample_date >= before:
-                continue
-
-            relative = str(parquet_path.relative_to(data_root))
-
-            results.append(
-                DiscoveredFile(
-                    path=parquet_path,
-                    relative_path=relative,
-                    provider=provider,
-                    root=root,
-                    sample_date=sample_date,
-                    sha256=_sha256(parquet_path),
-                    size_bytes=size,
-                )
+        results.append(
+            DiscoveredFile(
+                relative_path=relative_key,
+                provider=provider,
+                root=root,
+                sample_date=sample_date,
+                sha256=store.sha256(full_key),
+                size_bytes=size_bytes,
             )
+        )
 
     return results

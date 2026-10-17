@@ -93,13 +93,8 @@ LEVEL_ONE_EQUITIES_TABLE = TableDef(
             required=False,
         ),
         NestedField(field_id=125, name="security_status", field_type=StringType(), required=False),
-        NestedField(field_id=126, name="mark_price", field_type=DoubleType(), required=False),
-        NestedField(
-            field_id=127, name="quote_time_millis", field_type=TimestamptzType(), required=False
-        ),
-        NestedField(
-            field_id=128, name="trade_time_millis", field_type=TimestamptzType(), required=False
-        ),
+        # Fields 33, 34, 35 are extracted by tickrake to top-level mark, quote_time_ms, trade_time_ms.
+        # They do NOT appear in extra_json, so no columns here.
         NestedField(
             field_id=129,
             name="regular_market_trade_time",
@@ -137,6 +132,8 @@ LEVEL_ONE_EQUITIES_TABLE = TableDef(
             field_type=LongType(),
             required=False,
         ),
+        # Residual extra_json — unmapped keys preserved as raw JSON string.
+        NestedField(field_id=200, name="extra_json", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -176,9 +173,7 @@ EXTRA_JSON_FIELDS: dict[str, str] = {
     "30": "regular_market_last_size",
     "31": "regular_market_net_change",
     "32": "security_status",
-    "33": "mark_price",
-    "34": "quote_time_millis",
-    "35": "trade_time_millis",
+    # 33, 34, 35 are extracted by tickrake to top-level mark, quote_time_ms, trade_time_ms.
     "36": "regular_market_trade_time",
     "37": "bid_time",
     "38": "ask_time",
@@ -203,8 +198,6 @@ EXTRA_JSON_FIELDS: dict[str, str] = {
 
 # Extra_json fields that are epoch-ms timestamps — need conversion.
 TIMESTAMP_FIELDS: set[str] = {
-    "quote_time_millis",
-    "trade_time_millis",
     "regular_market_trade_time",
     "bid_time",
     "ask_time",

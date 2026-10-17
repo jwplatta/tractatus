@@ -19,6 +19,10 @@ _ENV_NAMES: dict[str, str] = {
     "glue_database": "GLUE_DATABASE",
     "catalog_database_url": "CATALOG_DATABASE_URL",
     "s3_storage_class": "S3_STORAGE_CLASS",
+    "minio_endpoint": "MINIO_ENDPOINT",
+    "minio_bucket": "MINIO_BUCKET",
+    "minio_access_key": "MINIO_ACCESS_KEY",
+    "minio_secret_key": "MINIO_SECRET_KEY",
 }
 
 
@@ -34,6 +38,10 @@ class CatalogConfig:
     data_root: Path
     database_url: str
     s3_storage_class: str
+    minio_endpoint: str | None = None
+    minio_bucket: str | None = None
+    minio_access_key: str | None = None
+    minio_secret_key: str | None = None
 
     @classmethod
     def load(cls, tractatus_config: TractatusConfig | None = None) -> CatalogConfig:
@@ -62,4 +70,8 @@ class CatalogConfig:
             data_root=tc.tickrake_data_dir,
             database_url=values.get("catalog_database_url") or _DEFAULTS["catalog_database_url"],
             s3_storage_class=values.get("s3_storage_class") or _DEFAULTS["s3_storage_class"],
+            minio_endpoint=values.get("minio_endpoint"),
+            minio_bucket=values.get("minio_bucket"),
+            minio_access_key=values.get("minio_access_key"),
+            minio_secret_key=values.get("minio_secret_key"),
         )

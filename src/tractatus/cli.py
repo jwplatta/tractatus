@@ -355,7 +355,7 @@ def catalog_sync_ledger(
             s3_key = f"{config.glue_database}/{table}/{relative_path}"
 
             # Parse provider/root/sample_date from the relative path
-            parsed = _parse_options(Path(relative_path), Path("."))
+            parsed = _parse_options(relative_path)
             if parsed is None:
                 # Try parsing with just the filename parts
                 parts = relative_path.split("/")
