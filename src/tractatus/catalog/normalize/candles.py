@@ -9,10 +9,19 @@ from __future__ import annotations
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from tractatus.catalog.normalize.common import align_to_schema, get_canonical
+from tractatus.catalog.normalize.common import align_to_schema, get_canonical, validate_input_schema
 from tractatus.catalog.schemas.candles import CANDLES_TABLE
 
 _COLUMNS, _TYPES = get_canonical(CANDLES_TABLE.schema)
+
+_EXPECTED_INPUT: dict[str, pa.DataType] = {
+    "datetime": pa.string(),
+    "open": pa.float64(),
+    "high": pa.float64(),
+    "low": pa.float64(),
+    "close": pa.float64(),
+    "volume": pa.int64(),
+}
 
 
 def normalize_candles(
@@ -23,6 +32,10 @@ def normalize_candles(
     """Normalize a candles Arrow table to the canonical schema."""
     diagnostics: list[str] = []
     n_rows = len(table)
+
+    # Validate input matches tickrake's producer contract
+    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    diagnostics.extend(val_diags)
 
     # Inject symbol from filename
     if symbol is not None and "symbol" not in table.column_names:

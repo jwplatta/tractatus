@@ -8,7 +8,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from tractatus.catalog.normalize.common import align_to_schema, get_canonical
+from tractatus.catalog.normalize.common import align_to_schema, get_canonical, validate_input_schema
 from tractatus.catalog.schemas.fundamentals import (
     DATE_COLUMNS,
     FUNDAMENTALS_TABLE,
@@ -17,10 +17,21 @@ from tractatus.catalog.schemas.fundamentals import (
 
 _COLUMNS, _TYPES = get_canonical(FUNDAMENTALS_TABLE.schema)
 
+# Validate only key identifier columns — fundamentals has 69+ columns and
+# the full set may evolve; the important thing is the identifiers are present.
+_EXPECTED_INPUT: dict[str, pa.DataType] = {
+    "symbol": pa.string(),
+    "sample_date": pa.string(),
+}
+
 
 def normalize_fundamentals(table: pa.Table) -> tuple[pa.Table, list[str]]:
     """Normalize a fundamentals Arrow table to the canonical schema."""
     diagnostics: list[str] = []
+
+    # Validate input matches tickrake's producer contract
+    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    diagnostics.extend(val_diags)
 
     # Cast date string columns → date32
     for col_name in DATE_COLUMNS:

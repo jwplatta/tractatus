@@ -325,3 +325,87 @@ class TestNormalizeFundamentals:
         assert len(result.column_names) == 69
         # Missing columns should be null
         assert result.column("htb_quantity")[0].as_py() is None
+
+
+class TestInputSchemaValidation:
+    """Tests for schema-on-read validation across all table types."""
+
+    def test_level_one_missing_column_raises(self) -> None:
+        table = pa.table(
+            {
+                "received_at_ms": pa.array([1000], type=pa.int64()),
+                # "symbol" intentionally missing
+                "service": pa.array(["LEVELONE_EQUITIES"], type=pa.string()),
+                "quote_time_ms": pa.array([2000], type=pa.int64()),
+                "trade_time_ms": pa.array([3000], type=pa.int64()),
+                "bid": pa.array([400.0], type=pa.float64()),
+                "ask": pa.array([401.0], type=pa.float64()),
+                "last": pa.array([400.5], type=pa.float64()),
+                "mark": pa.array([400.5], type=pa.float64()),
+                "bid_size": pa.array([100], type=pa.int64()),
+                "ask_size": pa.array([200], type=pa.int64()),
+                "volume": pa.array([5000], type=pa.int64()),
+                "extra_json": pa.array([None], type=pa.string()),
+            }
+        )
+        with pytest.raises(ValueError, match="Missing required columns: symbol"):
+            normalize_table(table, "level_one_equities", sample_date=datetime.date(2026, 10, 15))
+
+    def test_level_one_wrong_type_raises(self) -> None:
+        table = pa.table(
+            {
+                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "symbol": pa.array(["SPY"], type=pa.string()),
+                "service": pa.array(["LEVELONE_EQUITIES"], type=pa.string()),
+                "quote_time_ms": pa.array([2000], type=pa.int64()),
+                "trade_time_ms": pa.array([3000], type=pa.int64()),
+                "bid": pa.array(["400.0"], type=pa.string()),  # wrong type
+                "ask": pa.array([401.0], type=pa.float64()),
+                "last": pa.array([400.5], type=pa.float64()),
+                "mark": pa.array([400.5], type=pa.float64()),
+                "bid_size": pa.array([100], type=pa.int64()),
+                "ask_size": pa.array([200], type=pa.int64()),
+                "volume": pa.array([5000], type=pa.int64()),
+                "extra_json": pa.array([None], type=pa.string()),
+            }
+        )
+        with pytest.raises(ValueError, match="Column bid: expected double, got string"):
+            normalize_table(table, "level_one_equities", sample_date=datetime.date(2026, 10, 15))
+
+    def test_order_book_missing_column_raises(self) -> None:
+        table = pa.table(
+            {
+                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "symbol": pa.array(["SPY"], type=pa.string()),
+                "service": pa.array(["NASDAQ_BOOK"], type=pa.string()),
+                # "book_time_ms" intentionally missing
+                "bids_json": pa.array(["[]"], type=pa.string()),
+                "asks_json": pa.array(["[]"], type=pa.string()),
+            }
+        )
+        with pytest.raises(ValueError, match="Missing required columns: book_time_ms"):
+            normalize_table(table, "order_book", sample_date=datetime.date(2026, 10, 15))
+
+    def test_candles_missing_column_raises(self) -> None:
+        table = pa.table(
+            {
+                "datetime": pa.array(["2026-02-23T14:31:00Z"], type=pa.string()),
+                "open": pa.array([400.0], type=pa.float64()),
+                "high": pa.array([401.0], type=pa.float64()),
+                "low": pa.array([399.0], type=pa.float64()),
+                # "close" intentionally missing
+                "volume": pa.array([5000], type=pa.int64()),
+            }
+        )
+        with pytest.raises(ValueError, match="Missing required columns: close"):
+            normalize_table(table, "candles", symbol="SPX", interval="5min")
+
+    def test_fundamentals_missing_column_raises(self) -> None:
+        table = pa.table(
+            {
+                # "symbol" intentionally missing
+                "sample_date": pa.array(["2026-10-15"], type=pa.string()),
+            }
+        )
+        with pytest.raises(ValueError, match="Missing required columns: symbol"):
+            normalize_table(table, "fundamentals")
