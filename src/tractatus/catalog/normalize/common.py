@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import io
+from pathlib import Path
+
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.csv as pcsv
+import pyarrow.json as pj
+import pyarrow.parquet as pq
 from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.schema import Schema
 
@@ -16,10 +22,16 @@ _STRING_TYPES = {pa.string(), pa.large_string()}
 def _types_compatible(actual: pa.DataType, expected: pa.DataType) -> bool:
     """Check if two Arrow types are compatible for validation purposes.
 
-    Treats string/large_string as equivalent, and allows date/timestamp
-    variants where one is castable to the other (the normalizer handles casts).
+    Treats string/large_string as equivalent, int/float as castable (CSV readers
+    commonly infer int64 for values that are logically float), and allows
+    date/timestamp variants where string is expected.
     """
     if actual in _STRING_TYPES and expected in _STRING_TYPES:
+        return True
+    # Numeric types are castable (int64 ↔ float64)
+    if (pa.types.is_integer(actual) or pa.types.is_floating(actual)) and (
+        pa.types.is_integer(expected) or pa.types.is_floating(expected)
+    ):
         return True
     # Allow date/timestamp where string is expected (normalizer handles casts)
     return (pa.types.is_date(actual) or pa.types.is_timestamp(actual)) and expected in _STRING_TYPES
@@ -111,3 +123,40 @@ def align_to_schema(
             table = table.set_column(table.column_names.index(col_name), col_name, casted)
 
     return table, diagnostics
+
+
+def csv_to_arrow(data: bytes) -> pa.Table:
+    """Parse CSV bytes into an Arrow table with type inference."""
+    return pcsv.read_csv(io.BytesIO(data))
+
+
+def ndjson_to_arrow(data: bytes) -> pa.Table:
+    """Parse newline-delimited JSON bytes into an Arrow table."""
+    return pj.read_json(io.BytesIO(data))
+
+
+def iso_string_to_timestamp(col: pa.Array) -> pa.Array:
+    """Convert a string column of UTC ISO 8601 timestamps to timestamp[us, UTC]."""
+    parsed = pc.strptime(col, format="%Y-%m-%dT%H:%M:%SZ", unit="us")
+    return pc.assume_timezone(parsed, timezone="UTC")
+
+
+def write_canonical_parquet(
+    table: pa.Table,
+    dest: Path,
+    *,
+    sort_keys: list[str],
+    row_group_size: int,
+    compression: str = "zstd",
+    compression_level: int = 3,
+) -> None:
+    """Sort table and write with canonical physical specs."""
+    indices = pc.sort_indices(table, sort_keys=[(k, "ascending") for k in sort_keys])
+    table = table.take(indices)
+    pq.write_table(
+        table,
+        dest,
+        row_group_size=row_group_size,
+        compression=compression,
+        compression_level=compression_level,
+    )

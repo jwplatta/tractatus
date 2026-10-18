@@ -124,7 +124,7 @@ FUNDAMENTALS_TABLE = TableDef(
         NestedField(
             field_id=68, name="last_earnings_date", field_type=TimestamptzType(), required=False
         ),
-        NestedField(field_id=69, name="fetched_at", field_type=TimestamptzType(), required=False),
+        NestedField(field_id=69, name="sampled_at", field_type=TimestamptzType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -148,5 +148,5 @@ DATE_COLUMNS: list[str] = [
 
 TIMESTAMP_COLUMNS: list[str] = [
     "last_earnings_date",
-    "fetched_at",
+    "sampled_at",
 ]
