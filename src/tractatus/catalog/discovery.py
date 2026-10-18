@@ -105,9 +105,9 @@ def _parse_futures_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
 
 
 def _parse_candles(key: str) -> tuple[str, str, date] | None:
-    """Candles: provider/interval/YYYY/SYMBOL.parquet"""
+    """Candles: provider/interval/YYYY/SYMBOL.{parquet,csv}"""
     p = PurePosixPath(key)
-    if not p.name.endswith(".parquet"):
+    if p.suffix not in (".parquet", ".csv"):
         return None
     parts = p.parts
     # provider / interval / YYYY / SYMBOL.parquet
@@ -124,12 +124,12 @@ def _parse_candles(key: str) -> tuple[str, str, date] | None:
 
 
 def _parse_fundamentals(key: str) -> tuple[str, str, date] | None:
-    """Fundamentals: provider/YYYY/MM/DD.parquet"""
+    """Fundamentals: provider/YYYY/MM/DD.{parquet,ndjson}"""
     p = PurePosixPath(key)
-    if not p.name.endswith(".parquet"):
+    if p.suffix not in (".parquet", ".ndjson"):
         return None
     parts = p.parts
-    # provider / YYYY / MM / DD.parquet
+    # provider / YYYY / MM / DD.{ext}
     if len(parts) < 4:
         return None
     provider = parts[0]
@@ -140,6 +140,11 @@ def _parse_fundamentals(key: str) -> tuple[str, str, date] | None:
     return provider, "all", sample_date
 
 
+def _parse_economic_events(key: str) -> tuple[str, str, date] | None:
+    """Economic events: provider/YYYY/MM/DD.{parquet,ndjson}"""
+    return _parse_fundamentals(key)
+
+
 _PARSERS: dict[str, Callable[[str], tuple[str, str, date] | None]] = {
     "options": _parse_options,
     "level_one_equities": _parse_equities_symbol_timestamp,
@@ -147,6 +152,7 @@ _PARSERS: dict[str, Callable[[str], tuple[str, str, date] | None]] = {
     "order_book": _parse_symbol_timestamp,
     "candles": _parse_candles,
     "fundamentals": _parse_fundamentals,
+    "economic_events": _parse_economic_events,
 }
 
 # When the on-disk directory name differs from the table name.
@@ -162,7 +168,8 @@ _FILE_EXTENSIONS: dict[str, list[str]] = {
     "level_one_futures": [".parquet", ".ndjson"],
     "order_book": [".parquet", ".ndjson"],
     "candles": [".parquet", ".csv"],
-    "fundamentals": [".parquet"],
+    "fundamentals": [".parquet", ".ndjson"],
+    "economic_events": [".parquet", ".ndjson"],
 }
 
 _DEFAULT_EXTENSIONS = [".parquet"]
