@@ -18,7 +18,9 @@ Raw contracts: `/Users/jplatta/repos/tickrake/docs/schemas/raw_data_contracts.md
 Replace the parquet-only protocol with:
 ```python
 class FileStore(Protocol):
-    def list_files(self, prefix: str, extensions: list[str], providers: list[str] | None = None) -> list[tuple[str, int]]: ...
+    def list_files(
+        self, prefix: str, extensions: list[str], providers: list[str] | None = None
+    ) -> list[tuple[str, int]]: ...
     def read_raw(self, key: str) -> bytes: ...
     def read_parquet(self, key: str) -> pa.Table: ...
     def sha256(self, key: str) -> str: ...
@@ -43,12 +45,12 @@ Update `DiscoveredFile`:
 class DiscoveredFile:
     relative_path: str
     provider: str
-    root: str               # symbol or option root
+    root: str  # symbol or option root
     sample_date: date
     sha256: str
     size_bytes: int
-    file_format: str         # "parquet", "csv", "ndjson"
-    metadata: dict[str, str] # e.g. {"sampled_at": "2026-10-18T14:30:00Z"} for options CSV
+    file_format: str  # "parquet", "csv", "ndjson"
+    metadata: dict[str, str]  # e.g. {"sampled_at": "2026-10-18T14:30:00Z"} for options CSV
 ```
 
 New/updated parsers for raw staging file naming:
