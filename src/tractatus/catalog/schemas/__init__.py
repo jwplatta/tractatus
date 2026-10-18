@@ -12,6 +12,7 @@ from pyiceberg.table import Table
 
 from tractatus.catalog.schemas._types import TableDef
 from tractatus.catalog.schemas.candles import CANDLES_TABLE
+from tractatus.catalog.schemas.economic_events import ECONOMIC_EVENTS_TABLE
 from tractatus.catalog.schemas.fundamentals import FUNDAMENTALS_TABLE
 from tractatus.catalog.schemas.level_one_equities import LEVEL_ONE_EQUITIES_TABLE
 from tractatus.catalog.schemas.level_one_futures import LEVEL_ONE_FUTURES_TABLE
@@ -25,10 +26,12 @@ TABLE_DEFS: dict[str, TableDef] = {
     ORDER_BOOK_TABLE.name: ORDER_BOOK_TABLE,
     CANDLES_TABLE.name: CANDLES_TABLE,
     FUNDAMENTALS_TABLE.name: FUNDAMENTALS_TABLE,
+    ECONOMIC_EVENTS_TABLE.name: ECONOMIC_EVENTS_TABLE,
 }
 
 __all__ = [
     "CANDLES_TABLE",
+    "ECONOMIC_EVENTS_TABLE",
     "FUNDAMENTALS_TABLE",
     "LEVEL_ONE_EQUITIES_TABLE",
     "LEVEL_ONE_FUTURES_TABLE",

@@ -3,6 +3,9 @@
 Parses ``extra_json`` into flat columns with proper Schwab API field names.
 Separate normalizer entry points for equities and futures since the field
 numbering has different semantics per service type.
+
+Expects NDJSON input with UTC ISO 8601 timestamps for received_at, quote_time,
+and trade_time. The ``job_type`` and ``provider`` metadata fields are stripped.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from tractatus.catalog.normalize.common import (
     align_to_schema,
     epoch_ms_to_timestamp,
     get_canonical,
+    iso_string_to_timestamp,
     validate_input_schema,
 )
 from tractatus.catalog.schemas.level_one_equities import (
@@ -40,13 +44,13 @@ from tractatus.catalog.schemas.level_one_futures import (
 _EQ_COLUMNS, _EQ_TYPES = get_canonical(LEVEL_ONE_EQUITIES_TABLE.schema)
 _FUT_COLUMNS, _FUT_TYPES = get_canonical(LEVEL_ONE_FUTURES_TABLE.schema)
 
-# Expected input schema from tickrake's LevelOneParquetWriter (shared by equities and futures).
+# Expected input schema from tickrake's NDJSON raw contract.
 _EXPECTED_INPUT: dict[str, pa.DataType] = {
-    "received_at_ms": pa.int64(),
+    "received_at": pa.string(),
     "symbol": pa.string(),
     "service": pa.string(),
-    "quote_time_ms": pa.int64(),
-    "trade_time_ms": pa.int64(),
+    "quote_time": pa.string(),
+    "trade_time": pa.string(),
     "bid": pa.float64(),
     "ask": pa.float64(),
     "last": pa.float64(),
@@ -56,6 +60,12 @@ _EXPECTED_INPUT: dict[str, pa.DataType] = {
     "volume": pa.int64(),
     "extra_json": pa.string(),
 }
+
+# Metadata fields from NDJSON that are not data columns.
+_METADATA_FIELDS = {"job_type", "provider"}
+
+# Top-level timestamp columns that arrive as UTC ISO strings.
+_SOURCE_TIMESTAMP_COLS = ("received_at", "quote_time", "trade_time")
 
 
 def _unpack_extra_json(
@@ -120,20 +130,27 @@ def _unpack_extra_json(
 def _convert_source_timestamps(
     table: pa.Table,
 ) -> tuple[pa.Table, list[str]]:
-    """Convert source parquet epoch-ms columns to timestamptz and rename."""
+    """Convert top-level UTC ISO string timestamp columns to timestamptz."""
     diagnostics: list[str] = []
-    renames = {
-        "received_at_ms": "received_at",
-        "quote_time_ms": "quote_time",
-        "trade_time_ms": "trade_time",
-    }
-    for old_name, new_name in renames.items():
-        if old_name in table.column_names:
-            idx = table.column_names.index(old_name)
-            converted = epoch_ms_to_timestamp(table.column(old_name))
-            table = table.set_column(idx, new_name, converted)
-            diagnostics.append(f"Converted {old_name} to timestamptz as {new_name}")
+    for col_name in _SOURCE_TIMESTAMP_COLS:
+        if col_name not in table.column_names:
+            continue
+        col = table.column(col_name)
+        if pa.types.is_string(col.type) or pa.types.is_large_string(col.type):
+            idx = table.column_names.index(col_name)
+            converted = iso_string_to_timestamp(col)
+            table = table.set_column(idx, col_name, converted)
+            diagnostics.append(f"Cast {col_name} from string to timestamptz")
     return table, diagnostics
+
+
+def _strip_metadata_fields(table: pa.Table) -> tuple[pa.Table, list[str]]:
+    """Remove metadata-only fields (job_type, provider) from the table."""
+    to_drop = [c for c in _METADATA_FIELDS if c in table.column_names]
+    if to_drop:
+        table = table.drop(to_drop)
+        return table, [f"Stripped metadata fields: {', '.join(to_drop)}"]
+    return table, []
 
 
 def normalize_level_one_equities(
@@ -143,11 +160,15 @@ def normalize_level_one_equities(
     diagnostics: list[str] = []
     n_rows = len(table)
 
+    # Strip metadata fields before validation
+    table, strip_diags = _strip_metadata_fields(table)
+    diagnostics.extend(strip_diags)
+
     # Validate input matches tickrake's producer contract
     val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
-    # Convert source parquet timestamp columns
+    # Convert source string timestamp columns to timestamptz
     table, ts_diags = _convert_source_timestamps(table)
     diagnostics.extend(ts_diags)
 
@@ -175,11 +196,15 @@ def normalize_level_one_futures(
     diagnostics: list[str] = []
     n_rows = len(table)
 
+    # Strip metadata fields before validation
+    table, strip_diags = _strip_metadata_fields(table)
+    diagnostics.extend(strip_diags)
+
     # Validate input matches tickrake's producer contract
     val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
-    # Convert source parquet timestamp columns
+    # Convert source string timestamp columns to timestamptz
     table, ts_diags = _convert_source_timestamps(table)
     diagnostics.extend(ts_diags)
 

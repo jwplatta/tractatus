@@ -2,6 +2,9 @@
 
 Parses ``bids_json`` and ``asks_json`` strings into nested
 ``list<struct<price, size, num_orders, venues>>`` Arrow columns.
+
+Expects NDJSON input with UTC ISO 8601 timestamps for received_at and
+book_time. The ``job_type`` and ``provider`` metadata fields are stripped.
 """
 
 from __future__ import annotations
@@ -13,8 +16,8 @@ import pyarrow as pa
 
 from tractatus.catalog.normalize.common import (
     align_to_schema,
-    epoch_ms_to_timestamp,
     get_canonical,
+    iso_string_to_timestamp,
     validate_input_schema,
 )
 from tractatus.catalog.schemas.order_book import ORDER_BOOK_TABLE
@@ -22,13 +25,19 @@ from tractatus.catalog.schemas.order_book import ORDER_BOOK_TABLE
 _COLUMNS, _TYPES = get_canonical(ORDER_BOOK_TABLE.schema)
 
 _EXPECTED_INPUT: dict[str, pa.DataType] = {
-    "received_at_ms": pa.int64(),
+    "received_at": pa.string(),
     "symbol": pa.string(),
     "service": pa.string(),
-    "book_time_ms": pa.int64(),
+    "book_time": pa.string(),
     "bids_json": pa.string(),
     "asks_json": pa.string(),
 }
+
+# Metadata fields from NDJSON that are not data columns.
+_METADATA_FIELDS = {"job_type", "provider"}
+
+# Top-level timestamp columns that arrive as UTC ISO strings.
+_SOURCE_TIMESTAMP_COLS = ("received_at", "book_time")
 
 
 def _parse_book_json(json_col: pa.Array, n_rows: int) -> pa.Array:
@@ -60,12 +69,25 @@ def _parse_book_json(json_col: pa.Array, n_rows: int) -> pa.Array:
     return pa.array(rows, type=_TYPES["bids"])
 
 
+def _strip_metadata_fields(table: pa.Table) -> tuple[pa.Table, list[str]]:
+    """Remove metadata-only fields (job_type, provider) from the table."""
+    to_drop = [c for c in _METADATA_FIELDS if c in table.column_names]
+    if to_drop:
+        table = table.drop(to_drop)
+        return table, [f"Stripped metadata fields: {', '.join(to_drop)}"]
+    return table, []
+
+
 def normalize_order_book(
     table: pa.Table, sample_date: date_type | None = None
 ) -> tuple[pa.Table, list[str]]:
     """Normalize an order_book Arrow table to the canonical schema."""
     diagnostics: list[str] = []
     n_rows = len(table)
+
+    # Strip metadata fields before validation
+    table, strip_diags = _strip_metadata_fields(table)
+    diagnostics.extend(strip_diags)
 
     # Validate input matches tickrake's producer contract
     val_diags = validate_input_schema(table, _EXPECTED_INPUT)
@@ -78,14 +100,16 @@ def normalize_order_book(
             table = table.append_column(target_col, parsed)
             diagnostics.append(f"Parsed {json_col_name} into nested {target_col}")
 
-    # Convert epoch-ms columns to timestamptz and rename
-    _MS_RENAMES = {"received_at_ms": "received_at", "book_time_ms": "book_time"}
-    for old_name, new_name in _MS_RENAMES.items():
-        if old_name in table.column_names:
-            idx = table.column_names.index(old_name)
-            converted = epoch_ms_to_timestamp(table.column(old_name))
-            table = table.set_column(idx, new_name, converted)
-            diagnostics.append(f"Converted {old_name} to timestamptz as {new_name}")
+    # Convert UTC ISO string timestamp columns to timestamptz
+    for col_name in _SOURCE_TIMESTAMP_COLS:
+        if col_name not in table.column_names:
+            continue
+        col = table.column(col_name)
+        if pa.types.is_string(col.type) or pa.types.is_large_string(col.type):
+            idx = table.column_names.index(col_name)
+            converted = iso_string_to_timestamp(col)
+            table = table.set_column(idx, col_name, converted)
+            diagnostics.append(f"Cast {col_name} from string to timestamptz")
 
     # Drop original JSON columns
     to_drop = [c for c in ("bids_json", "asks_json") if c in table.column_names]

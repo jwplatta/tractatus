@@ -1,4 +1,4 @@
-"""Tests for per-table normalization (level_one, order_book, candles, fundamentals)."""
+"""Tests for per-table normalization (level_one, order_book, candles, fundamentals, economic_events)."""
 
 from __future__ import annotations
 
@@ -32,11 +32,13 @@ class TestNormalizeLevelOneEquities:
         )
         return pa.table(
             {
-                "received_at_ms": pa.array([1000] * n_rows, type=pa.int64()),
+                "job_type": pa.array(["level_one"] * n_rows, type=pa.string()),
+                "provider": pa.array(["schwab"] * n_rows, type=pa.string()),
+                "received_at": pa.array(["2026-10-18T14:30:00Z"] * n_rows, type=pa.string()),
                 "symbol": pa.array(["SPY"] * n_rows, type=pa.string()),
                 "service": pa.array(["LEVELONE_EQUITIES"] * n_rows, type=pa.string()),
-                "quote_time_ms": pa.array([2000] * n_rows, type=pa.int64()),
-                "trade_time_ms": pa.array([3000] * n_rows, type=pa.int64()),
+                "quote_time": pa.array(["2026-10-18T14:30:00Z"] * n_rows, type=pa.string()),
+                "trade_time": pa.array(["2026-10-18T14:29:59Z"] * n_rows, type=pa.string()),
                 "bid": pa.array([400.0] * n_rows, type=pa.float64()),
                 "ask": pa.array([401.0] * n_rows, type=pa.float64()),
                 "last": pa.array([400.5] * n_rows, type=pa.float64()),
@@ -68,14 +70,23 @@ class TestNormalizeLevelOneEquities:
         result, _ = normalize_table(
             table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
         )
-        # Source epoch-ms columns converted and renamed
-        assert "received_at_ms" not in result.column_names
+        # Source string columns converted to timestamptz
         received = result.column("received_at")[0].as_py()
         assert isinstance(received, datetime.datetime)
+        assert received.tzinfo is not None
         # Extra_json timestamp fields also converted
         rmt = result.column("regular_market_trade_time")[0].as_py()
         assert isinstance(rmt, datetime.datetime)
         assert rmt.tzinfo is not None
+
+    def test_strips_metadata_fields(self) -> None:
+        table = self._make_table()
+        result, diags = normalize_table(
+            table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert "job_type" not in result.column_names
+        assert "provider" not in result.column_names
+        assert any("Stripped metadata" in d for d in diags)
 
     def test_adds_sample_date(self) -> None:
         table = self._make_table()
@@ -93,7 +104,7 @@ class TestNormalizeLevelOneEquities:
         assert residual == {"unknownKey": "preserved"}
 
     def test_no_duplicate_columns_for_tickrake_extracted_fields(self) -> None:
-        """Fields 33, 34, 35 are extracted by tickrake to mark, quote_time_ms, trade_time_ms.
+        """Fields 33, 34, 35 are extracted by tickrake to mark, quote_time, trade_time.
         They should NOT produce separate mark_price/quote_time_millis/trade_time_millis columns."""
         table = self._make_table()
         result, _ = normalize_table(
@@ -110,11 +121,11 @@ class TestNormalizeLevelOneEquities:
     def test_null_extra_json(self) -> None:
         table = pa.table(
             {
-                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "received_at": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
                 "symbol": pa.array(["SPY"], type=pa.string()),
                 "service": pa.array(["LEVELONE_EQUITIES"], type=pa.string()),
-                "quote_time_ms": pa.array([2000], type=pa.int64()),
-                "trade_time_ms": pa.array([3000], type=pa.int64()),
+                "quote_time": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
+                "trade_time": pa.array(["2026-10-18T14:29:59Z"], type=pa.string()),
                 "bid": pa.array([400.0], type=pa.float64()),
                 "ask": pa.array([401.0], type=pa.float64()),
                 "last": pa.array([400.5], type=pa.float64()),
@@ -146,11 +157,13 @@ class TestNormalizeLevelOneFutures:
         )
         return pa.table(
             {
-                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "job_type": pa.array(["level_one"], type=pa.string()),
+                "provider": pa.array(["schwab"], type=pa.string()),
+                "received_at": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
                 "symbol": pa.array(["^ES"], type=pa.string()),
                 "service": pa.array(["LEVELONE_FUTURES"], type=pa.string()),
-                "quote_time_ms": pa.array([2000], type=pa.int64()),
-                "trade_time_ms": pa.array([3000], type=pa.int64()),
+                "quote_time": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
+                "trade_time": pa.array(["2026-10-18T14:29:59Z"], type=pa.string()),
                 "bid": pa.array([5600.0], type=pa.float64()),
                 "ask": pa.array([5601.0], type=pa.float64()),
                 "last": pa.array([5600.5], type=pa.float64()),
@@ -174,7 +187,7 @@ class TestNormalizeLevelOneFutures:
         assert result.column("delayed")[0].as_py() is False
 
     def test_no_duplicate_columns_for_tickrake_extracted_fields(self) -> None:
-        """Fields 10, 11, 24 are extracted by tickrake to quote_time_ms, trade_time_ms, mark."""
+        """Fields 10, 11, 24 are extracted by tickrake to quote_time, trade_time, mark."""
         table = self._make_table()
         result, _ = normalize_table(
             table, "level_one_futures", sample_date=datetime.date(2026, 10, 15)
@@ -221,10 +234,12 @@ class TestNormalizeOrderBook:
         )
         return pa.table(
             {
-                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "job_type": pa.array(["order_book"], type=pa.string()),
+                "provider": pa.array(["schwab"], type=pa.string()),
+                "received_at": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
                 "symbol": pa.array(["SPY"], type=pa.string()),
                 "service": pa.array(["NASDAQ_BOOK"], type=pa.string()),
-                "book_time_ms": pa.array([2000], type=pa.int64()),
+                "book_time": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
                 "bids_json": pa.array([bids], type=pa.string()),
                 "asks_json": pa.array([asks], type=pa.string()),
             }
@@ -243,15 +258,23 @@ class TestNormalizeOrderBook:
         assert len(bids[0]["venues"]) == 2
         assert bids[0]["venues"][0]["venue"] == "NSDQ"
 
-    def test_converts_ms_to_timestamps(self) -> None:
+    def test_converts_string_to_timestamps(self) -> None:
         table = self._make_table()
         result, _ = normalize_table(table, "order_book", sample_date=datetime.date(2026, 10, 15))
-        assert "received_at_ms" not in result.column_names
-        assert "book_time_ms" not in result.column_names
         received = result.column("received_at")[0].as_py()
         assert isinstance(received, datetime.datetime)
+        assert received.tzinfo is not None
         book_time = result.column("book_time")[0].as_py()
         assert isinstance(book_time, datetime.datetime)
+        assert book_time.tzinfo is not None
+
+    def test_strips_metadata_fields(self) -> None:
+        table = self._make_table()
+        result, diags = normalize_table(
+            table, "order_book", sample_date=datetime.date(2026, 10, 15)
+        )
+        assert "job_type" not in result.column_names
+        assert "provider" not in result.column_names
 
     def test_adds_sample_date(self) -> None:
         table = self._make_table()
@@ -327,17 +350,63 @@ class TestNormalizeFundamentals:
         assert result.column("htb_quantity")[0].as_py() is None
 
 
+class TestNormalizeEconomicEvents:
+    def _make_table(self) -> pa.Table:
+        return pa.table(
+            {
+                "event_datetime": pa.array(["2026-10-14T08:30:00Z"], type=pa.string()),
+                "event_name": pa.array(["CPI"], type=pa.string()),
+                "category": pa.array(["economic"], type=pa.string()),
+                "source": pa.array(["bls"], type=pa.string()),
+                "actual": pa.array([3.2], type=pa.float64()),
+                "estimate": pa.array([3.1], type=pa.float64()),
+                "previous": pa.array([3.0], type=pa.float64()),
+                "unit": pa.array(["percent"], type=pa.string()),
+                "symbol": pa.array([None], type=pa.string()),
+                "company_name": pa.array([None], type=pa.string()),
+                "time_of_day": pa.array([None], type=pa.string()),
+                "release_id": pa.array([53], type=pa.int64()),
+                "series_id": pa.array(["CPIAUCSL"], type=pa.string()),
+                "sampled_at": pa.array(["2026-10-14T12:00:00Z"], type=pa.string()),
+            }
+        )
+
+    def test_casts_timestamp_columns(self) -> None:
+        table = self._make_table()
+        result, diags = normalize_table(table, "economic_events")
+        assert result.column("event_datetime")[0].as_py() == datetime.datetime(
+            2026, 10, 14, 8, 30, tzinfo=datetime.UTC
+        )
+        assert result.column("sampled_at")[0].as_py() == datetime.datetime(
+            2026, 10, 14, 12, 0, tzinfo=datetime.UTC
+        )
+
+    def test_preserves_all_fields(self) -> None:
+        table = self._make_table()
+        result, _ = normalize_table(table, "economic_events")
+        assert result.column("event_name")[0].as_py() == "CPI"
+        assert result.column("category")[0].as_py() == "economic"
+        assert result.column("source")[0].as_py() == "bls"
+        assert result.column("actual")[0].as_py() == pytest.approx(3.2)
+        assert result.column("release_id")[0].as_py() == 53
+
+    def test_adds_missing_columns(self) -> None:
+        table = self._make_table()
+        result, _ = normalize_table(table, "economic_events")
+        assert len(result.column_names) == 14
+
+
 class TestInputSchemaValidation:
     """Tests for schema-on-read validation across all table types."""
 
     def test_level_one_missing_column_raises(self) -> None:
         table = pa.table(
             {
-                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "received_at": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
                 # "symbol" intentionally missing
                 "service": pa.array(["LEVELONE_EQUITIES"], type=pa.string()),
-                "quote_time_ms": pa.array([2000], type=pa.int64()),
-                "trade_time_ms": pa.array([3000], type=pa.int64()),
+                "quote_time": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
+                "trade_time": pa.array(["2026-10-18T14:29:59Z"], type=pa.string()),
                 "bid": pa.array([400.0], type=pa.float64()),
                 "ask": pa.array([401.0], type=pa.float64()),
                 "last": pa.array([400.5], type=pa.float64()),
@@ -354,11 +423,11 @@ class TestInputSchemaValidation:
     def test_level_one_wrong_type_raises(self) -> None:
         table = pa.table(
             {
-                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "received_at": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
                 "symbol": pa.array(["SPY"], type=pa.string()),
                 "service": pa.array(["LEVELONE_EQUITIES"], type=pa.string()),
-                "quote_time_ms": pa.array([2000], type=pa.int64()),
-                "trade_time_ms": pa.array([3000], type=pa.int64()),
+                "quote_time": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
+                "trade_time": pa.array(["2026-10-18T14:29:59Z"], type=pa.string()),
                 "bid": pa.array(["400.0"], type=pa.string()),  # wrong type
                 "ask": pa.array([401.0], type=pa.float64()),
                 "last": pa.array([400.5], type=pa.float64()),
@@ -375,15 +444,15 @@ class TestInputSchemaValidation:
     def test_order_book_missing_column_raises(self) -> None:
         table = pa.table(
             {
-                "received_at_ms": pa.array([1000], type=pa.int64()),
+                "received_at": pa.array(["2026-10-18T14:30:00Z"], type=pa.string()),
                 "symbol": pa.array(["SPY"], type=pa.string()),
                 "service": pa.array(["NASDAQ_BOOK"], type=pa.string()),
-                # "book_time_ms" intentionally missing
+                # "book_time" intentionally missing
                 "bids_json": pa.array(["[]"], type=pa.string()),
                 "asks_json": pa.array(["[]"], type=pa.string()),
             }
         )
-        with pytest.raises(ValueError, match="Missing required columns: book_time_ms"):
+        with pytest.raises(ValueError, match="Missing required columns: book_time"):
             normalize_table(table, "order_book", sample_date=datetime.date(2026, 10, 15))
 
     def test_candles_missing_column_raises(self) -> None:
@@ -409,3 +478,16 @@ class TestInputSchemaValidation:
         )
         with pytest.raises(ValueError, match="Missing required columns: symbol"):
             normalize_table(table, "fundamentals")
+
+    def test_economic_events_missing_column_raises(self) -> None:
+        table = pa.table(
+            {
+                # "event_name" intentionally missing
+                "category": pa.array(["economic"], type=pa.string()),
+                "source": pa.array(["bls"], type=pa.string()),
+                "event_datetime": pa.array(["2026-10-14T08:30:00Z"], type=pa.string()),
+                "sampled_at": pa.array(["2026-10-14T12:00:00Z"], type=pa.string()),
+            }
+        )
+        with pytest.raises(ValueError, match="Missing required columns: event_name"):
+            normalize_table(table, "economic_events")
