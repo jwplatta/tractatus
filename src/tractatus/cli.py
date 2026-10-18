@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -28,10 +29,12 @@ init_app = typer.Typer(no_args_is_help=True, help="Create a research project.")
 data_app = typer.Typer(no_args_is_help=True, help="Retrieve Tickrake data.")
 config_app = typer.Typer(no_args_is_help=True, help="Manage Tractatus configuration.")
 catalog_app = typer.Typer(no_args_is_help=True, help="Iceberg catalog operations.")
+cache_app = typer.Typer(no_args_is_help=True, help="Local cache management.")
 app.add_typer(init_app, name="init")
 app.add_typer(data_app, name="data")
 app.add_typer(config_app, name="config")
 app.add_typer(catalog_app, name="catalog")
+catalog_app.add_typer(cache_app, name="cache")
 
 _PROJECT_FILES = {
     ".python-version": "3.11\n",
@@ -238,6 +241,7 @@ def catalog_publish(
     typer.echo(f"Table:      {table}")
     typer.echo(f"Discovered: {result.discovered}")
     typer.echo(f"Committed:  {result.committed}")
+    typer.echo(f"Cached:     {result.cached}")
     typer.echo(f"Errors:     {result.errors}")
     for detail in result.details:
         typer.echo(detail)
@@ -621,3 +625,113 @@ def _build_ledger_count_query(
         where += " AND sample_date < %s"
         params.append(before)
     return f"SELECT COUNT(*) FROM catalog_files {where}", tuple(params)
+
+
+@cache_app.command("status")
+def cache_status(
+    table: Annotated[
+        str | None, typer.Option("--table", help="Filter to a specific table.")
+    ] = None,
+) -> None:
+    """Show cache summary (file count and total bytes)."""
+    config = CatalogConfig.load()
+    ledger = Ledger(config.database_url)
+    try:
+        summary = ledger.cache_summary(table_name=table)
+    finally:
+        ledger.close()
+
+    if table:
+        typer.echo(f"Table: {table}")
+    typer.echo(f"  Cached files: {summary['cached_files']}")
+    typer.echo(f"  Cached bytes: {summary['cached_bytes']}")
+
+
+@cache_app.command("evict")
+def cache_evict(
+    older_than: Annotated[
+        int, typer.Option("--older-than", help="Evict files not accessed in N days.")
+    ],
+    table: Annotated[
+        str | None, typer.Option("--table", help="Filter to a specific table.")
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Filter to a specific provider.")
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+) -> None:
+    """Evict cached files older than N days from local MinIO and clear ledger entries."""
+    config = CatalogConfig.load()
+    ledger = Ledger(config.database_url)
+    try:
+        files = ledger.cached_files(table_name=table, older_than_days=older_than, provider=provider)
+        if not files:
+            typer.echo("No cached files match the criteria.")
+            return
+
+        typer.echo(f"Found {len(files)} cached file(s) to evict.")
+        if not yes and not typer.confirm("Proceed with eviction?", default=False):
+            raise typer.Abort()
+
+        cache_client = None
+        if config.minio_endpoint and config.cache_bucket:
+            cache_client = boto3.client(
+                "s3",
+                endpoint_url=config.minio_endpoint,
+                aws_access_key_id=config.minio_access_key or "",
+                aws_secret_access_key=config.minio_secret_key or "",
+                region_name="us-east-1",
+            )
+
+        evicted = 0
+        for f in files:
+            if cache_client and f.cache_key and config.cache_bucket:
+                with contextlib.suppress(Exception):
+                    cache_client.delete_object(Bucket=config.cache_bucket, Key=f.cache_key)
+            ledger.clear_cache_entry(f.path, f.table_name)
+            evicted += 1
+
+        typer.echo(f"Evicted {evicted} cached file(s).")
+    finally:
+        ledger.close()
+
+
+@cache_app.command("clear")
+def cache_clear(
+    table: Annotated[str, typer.Option("--table", help="Table to clear cache for.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+) -> None:
+    """Clear all cached files for a table from local MinIO and ledger."""
+    config = CatalogConfig.load()
+    ledger = Ledger(config.database_url)
+    try:
+        files = ledger.cached_files(table_name=table)
+        if not files:
+            typer.echo(f"No cached files for table {table!r}.")
+            return
+
+        typer.echo(f"Found {len(files)} cached file(s) for table {table!r}.")
+        if not yes and not typer.confirm("Proceed with clear?", default=False):
+            raise typer.Abort()
+
+        cache_client = None
+        if config.minio_endpoint and config.cache_bucket:
+            cache_client = boto3.client(
+                "s3",
+                endpoint_url=config.minio_endpoint,
+                aws_access_key_id=config.minio_access_key or "",
+                aws_secret_access_key=config.minio_secret_key or "",
+                region_name="us-east-1",
+            )
+
+        cleared = 0
+        for f in files:
+            if cache_client and f.cache_key and config.cache_bucket:
+                with contextlib.suppress(Exception):
+                    cache_client.delete_object(Bucket=config.cache_bucket, Key=f.cache_key)
+            ledger.clear_cache_entry(f.path, f.table_name)
+            cleared += 1
+
+        typer.echo(f"Cleared {cleared} cached file(s) for table {table!r}.")
+    finally:
+        ledger.close()
