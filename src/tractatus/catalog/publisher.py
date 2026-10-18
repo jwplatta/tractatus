@@ -12,6 +12,9 @@ from pathlib import PurePosixPath
 from typing import Any
 
 import boto3
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from pyiceberg.catalog import Catalog, load_catalog
 
 from tractatus.catalog.config import CatalogConfig
@@ -19,7 +22,6 @@ from tractatus.catalog.discovery import data_dir_name, discover_files
 from tractatus.catalog.file_store import FileStore, LocalFileStore, S3FileStore
 from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_raw, normalize_table
-from tractatus.catalog.normalize.common import write_canonical_parquet
 from tractatus.catalog.schemas import TABLE_DEFS
 
 logger = logging.getLogger("tractatus.catalog")
@@ -27,46 +29,12 @@ logger = logging.getLogger("tractatus.catalog")
 _DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
 
 
-# Per-table canonical parquet specs: (sort_keys, row_group_size, compression, compression_level)
-@dataclass(frozen=True)
-class _ParquetSpec:
-    sort_keys: list[str]
-    row_group_size: int
-    compression: str = "zstd"
-    compression_level: int = 3
-
-
-_PARQUET_SPECS: dict[str, _ParquetSpec] = {
-    "options": _ParquetSpec(
-        sort_keys=["expiration_date", "sampled_at", "strike", "contract_type", "symbol"],
-        row_group_size=50_000,
-    ),
-    "level_one_equities": _ParquetSpec(
-        sort_keys=["received_at", "quote_time", "trade_time"],
-        row_group_size=150_000,
-    ),
-    "level_one_futures": _ParquetSpec(
-        sort_keys=["received_at", "quote_time", "trade_time"],
-        row_group_size=150_000,
-    ),
-    "order_book": _ParquetSpec(
-        sort_keys=["received_at", "book_time"],
-        row_group_size=35_000,
-        compression_level=5,
-    ),
-    "candles": _ParquetSpec(
-        sort_keys=["datetime"],
-        row_group_size=50_000,
-    ),
-    "fundamentals": _ParquetSpec(
-        sort_keys=["sample_date", "symbol"],
-        row_group_size=50_000,
-    ),
-    "economic_events": _ParquetSpec(
-        sort_keys=["event_datetime", "event_name"],
-        row_group_size=50_000,
-    ),
-}
+def _sort_table(table: pa.Table, sort_keys: list[str]) -> pa.Table:
+    """Sort an Arrow table by the given keys. No-op if sort_keys is empty."""
+    if not sort_keys:
+        return table
+    indices = pc.sort_indices(table, sort_keys=[(k, "ascending") for k in sort_keys])
+    return table.take(indices)
 
 
 def _metadata_from_path(
@@ -248,7 +216,7 @@ class Publisher:
         full_name = f"{self._config.glue_database}.{table_name}"
         iceberg_table = catalog.load_table(full_name)
         table_prefix = data_dir_name(table_name)
-        spec = _PARQUET_SPECS.get(table_name)
+        table_def = TABLE_DEFS[table_name]
 
         committed = 0
         cached = 0
@@ -290,12 +258,15 @@ class Publisher:
                         }
                     )
 
+                # Pre-sort before Iceberg append (PyIceberg doesn't sort)
+                normalized = _sort_table(normalized, table_def.sort_keys)
+
                 iceberg_table.append(normalized)
                 self._ledger.mark_committed([record.path], table_name)
                 committed += 1
 
-                # Write canonical parquet to cache if configured
-                cache_key = self._cache_to_minio(normalized, table_name, record.path, spec)
+                # Upload to cache MinIO if configured
+                cache_key = self._cache_to_minio(normalized, table_name, record.path)
                 if cache_key:
                     self._ledger.mark_cached(record.path, table_name, cache_key)
                     cached += 1
@@ -338,29 +309,16 @@ class Publisher:
 
     def _cache_to_minio(
         self,
-        table: object,
+        table: pa.Table,
         table_name: str,
         path: str,
-        spec: _ParquetSpec | None,
     ) -> str | None:
-        """Write canonical parquet to the cache MinIO bucket. Returns cache_key or None."""
-        if self._cache_client is None or spec is None:
-            return None
-
-        import pyarrow as pa  # noqa: PLC0415
-
-        if not isinstance(table, pa.Table):
+        """Write parquet to the cache MinIO bucket. Returns cache_key or None."""
+        if self._cache_client is None:
             return None
 
         buf = io.BytesIO()
-        write_canonical_parquet(
-            table,
-            buf,
-            sort_keys=spec.sort_keys,
-            row_group_size=spec.row_group_size,
-            compression=spec.compression,
-            compression_level=spec.compression_level,
-        )
+        pq.write_table(table, buf)
         buf.seek(0)
 
         # Cache key mirrors the staging path but with .parquet extension

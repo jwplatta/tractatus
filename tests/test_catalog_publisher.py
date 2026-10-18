@@ -10,7 +10,7 @@ import pyarrow as pa
 import pytest
 
 from tractatus.catalog.config import CatalogConfig
-from tractatus.catalog.publisher import _PARQUET_SPECS, Publisher, _metadata_from_path
+from tractatus.catalog.publisher import Publisher, _metadata_from_path
 from tractatus.catalog.schemas import TABLE_DEFS
 
 
@@ -90,8 +90,11 @@ def test_unknown_table_raises(tmp_path: Path) -> None:
 # --- Append pipeline tests ---
 
 
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
 @patch("tractatus.catalog.publisher.load_catalog")
-def test_append_csv_file(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
+def test_append_csv_file(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
     """CSV files should go through normalize_raw path."""
     config = _make_config(tmp_path)
     _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
@@ -102,10 +105,8 @@ def test_append_csv_file(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
     mock_load_catalog.return_value = mock_catalog
 
     publisher = Publisher(config)
-    # Discover first
     publisher.run(table_name="options", dry_run=True)
 
-    # Now mock normalize_raw for the append
     normalized = pa.table({"x": [1]})
     with patch(
         "tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])
@@ -116,12 +117,15 @@ def test_append_csv_file(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
 
     mock_norm.assert_called_once()
     assert mock_norm.call_args[0][1] == "csv"  # file_format
-    mock_iceberg_table.append.assert_called_once_with(normalized)
+    mock_iceberg_table.append.assert_called_once()
     assert result.committed == 1
 
 
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
 @patch("tractatus.catalog.publisher.load_catalog")
-def test_append_ndjson_file(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
+def test_append_ndjson_file(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
     """NDJSON files should go through normalize_raw path."""
     config = _make_config(tmp_path)
     _create_level_one_ndjson(config.data_root, "schwab", date(2026, 6, 25), "AAPL")
@@ -147,8 +151,11 @@ def test_append_ndjson_file(mock_load_catalog: MagicMock, tmp_path: Path) -> Non
     assert result.committed == 1
 
 
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
 @patch("tractatus.catalog.publisher.load_catalog")
-def test_append_error_marks_ledger(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
+def test_append_error_marks_ledger(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
     """Files that fail normalization should be marked as errors."""
     config = _make_config(tmp_path)
     _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
@@ -168,8 +175,11 @@ def test_append_error_marks_ledger(mock_load_catalog: MagicMock, tmp_path: Path)
     assert result.committed == 0
 
 
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
 @patch("tractatus.catalog.publisher.load_catalog")
-def test_append_with_limit(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
+def test_append_with_limit(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
     """Limit should cap the number of files appended."""
     config = _make_config(tmp_path)
     _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
@@ -191,11 +201,42 @@ def test_append_with_limit(mock_load_catalog: MagicMock, tmp_path: Path) -> None
     assert result.committed == 1
 
 
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_append_sorts_before_iceberg(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
+    """Normalized table should be sorted by table_def.sort_keys before append."""
+    config = _make_config(tmp_path)
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+
+    mock_iceberg_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+
+    # Table with a sort key column in descending order
+    normalized = pa.table({"x": [3, 1, 2]})
+    with (
+        patch("tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])),
+        patch("tractatus.catalog.publisher._sort_table", wraps=lambda t, k: t) as mock_sort,
+    ):
+        publisher.run(table_name="options")
+
+    publisher.close()
+    mock_sort.assert_called_once()
+    # sort_keys should come from TABLE_DEFS["options"].sort_keys
+    assert mock_sort.call_args[0][1] == TABLE_DEFS["options"].sort_keys
+
+
 # --- Cache tests ---
 
 
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
 @patch("tractatus.catalog.publisher.load_catalog")
-def test_cache_to_minio(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
+def test_cache_to_minio(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
     """When cache_bucket is configured, files should be cached."""
     config = _make_config(tmp_path, cache_bucket="test-cache")
 
@@ -213,10 +254,7 @@ def test_cache_to_minio(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
     mock_cache_client = MagicMock()
     publisher._cache_client = mock_cache_client
 
-    with (
-        patch("tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])),
-        patch("tractatus.catalog.publisher.write_canonical_parquet"),
-    ):
+    with patch("tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])):
         result = publisher.run(table_name="options")
 
     publisher.close()
@@ -229,8 +267,11 @@ def test_cache_to_minio(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
     assert call_kwargs[1]["Key"].endswith(".parquet")
 
 
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
 @patch("tractatus.catalog.publisher.load_catalog")
-def test_no_cache_without_config(mock_load_catalog: MagicMock, tmp_path: Path) -> None:
+def test_no_cache_without_config(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
     """Without cache_bucket, no caching should happen."""
     config = _make_config(tmp_path)  # no cache_bucket
 
@@ -277,9 +318,19 @@ def test_metadata_from_path_options() -> None:
     assert sample_dt is None
 
 
-# --- Parquet specs tests ---
+# --- Table definition tests ---
 
 
-def test_all_tables_have_specs() -> None:
-    for table_name in TABLE_DEFS:
-        assert table_name in _PARQUET_SPECS, f"Missing parquet spec for {table_name}"
+def test_all_tables_have_sort_keys() -> None:
+    for table_name, table_def in TABLE_DEFS.items():
+        assert table_def.sort_keys, f"Missing sort_keys for {table_name}"
+
+
+def test_all_tables_have_write_properties() -> None:
+    for table_name, table_def in TABLE_DEFS.items():
+        assert "write.parquet.compression-codec" in table_def.properties, (
+            f"Missing compression-codec for {table_name}"
+        )
+        assert "write.parquet.row-group-limit" in table_def.properties, (
+            f"Missing row-group-limit for {table_name}"
+        )

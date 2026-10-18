@@ -43,6 +43,12 @@ ECONOMIC_EVENTS_TABLE = TableDef(
             name="event_datetime_month",
         )
     ),
+    sort_keys=["event_datetime", "event_name"],
+    properties={
+        "write.parquet.compression-codec": "zstd",
+        "write.parquet.compression-level": "3",
+        "write.parquet.row-group-limit": "50000",
+    },
 )
 
 TIMESTAMP_COLUMNS: list[str] = [

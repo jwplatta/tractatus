@@ -35,4 +35,10 @@ CANDLES_TABLE = TableDef(
             name="interval_id",
         )
     ),
+    sort_keys=["datetime"],
+    properties={
+        "write.parquet.compression-codec": "zstd",
+        "write.parquet.compression-level": "3",
+        "write.parquet.row-group-limit": "50000",
+    },
 )
