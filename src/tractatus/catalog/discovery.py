@@ -1,4 +1,4 @@
-"""Discover parquet files from a file store (local or S3-compatible).
+"""Discover data files from a file store (local or S3-compatible).
 
 Supports per-table directory layouts via ``_PARSERS``.
 """
@@ -20,7 +20,7 @@ _SYMBOL_TIMESTAMP = re.compile(r"^(.+?)_\d+Z\.parquet$")
 
 @dataclass
 class DiscoveredFile:
-    """A parquet file found in the store."""
+    """A data file found in the store."""
 
     relative_path: str
     provider: str
@@ -28,6 +28,8 @@ class DiscoveredFile:
     sample_date: date
     sha256: str
     size_bytes: int
+    file_format: str = "parquet"  # "parquet", "csv", or "ndjson"
+    metadata: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -153,10 +155,31 @@ _DATA_DIR_NAMES: dict[str, str] = {
     "level_one_futures": "level_one",
 }
 
+# File extensions to scan per table.  Discovery will match any of these.
+_FILE_EXTENSIONS: dict[str, list[str]] = {
+    "options": [".parquet", ".csv"],
+    "level_one_equities": [".parquet", ".ndjson"],
+    "level_one_futures": [".parquet", ".ndjson"],
+    "order_book": [".parquet", ".ndjson"],
+    "candles": [".parquet", ".csv"],
+    "fundamentals": [".parquet"],
+}
+
+_DEFAULT_EXTENSIONS = [".parquet"]
+
 
 def data_dir_name(table_name: str) -> str:
     """Return the on-disk directory name for a table (may differ from the table name)."""
     return _DATA_DIR_NAMES.get(table_name, table_name)
+
+
+def _file_format_from_key(key: str) -> str:
+    """Derive file format from extension."""
+    if key.endswith(".ndjson"):
+        return "ndjson"
+    if key.endswith(".csv"):
+        return "csv"
+    return "parquet"
 
 
 def discover_files(
@@ -166,7 +189,7 @@ def discover_files(
     after: date | None = None,
     before: date | None = None,
 ) -> list[DiscoveredFile]:
-    """Scan *store* for parquet files matching *table_name*'s layout.
+    """Scan *store* for data files matching *table_name*'s layout.
 
     Parameters
     ----------
@@ -189,7 +212,8 @@ def discover_files(
         )
 
     prefix = data_dir_name(table_name)
-    entries = store.list_parquet(prefix, providers=providers)
+    extensions = _FILE_EXTENSIONS.get(table_name, _DEFAULT_EXTENSIONS)
+    entries = store.list_files(prefix, extensions=extensions, providers=providers)
 
     results: list[DiscoveredFile] = []
     for full_key, size_bytes in entries:
@@ -218,6 +242,7 @@ def discover_files(
                 sample_date=sample_date,
                 sha256=store.sha256(full_key),
                 size_bytes=size_bytes,
+                file_format=_file_format_from_key(full_key),
             )
         )
 

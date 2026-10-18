@@ -18,20 +18,28 @@ import pyarrow.parquet as pq
 
 
 class FileStore(Protocol):
-    """Backend-agnostic interface for discovering and reading parquet files."""
+    """Backend-agnostic interface for discovering and reading data files."""
 
-    def list_parquet(
-        self, prefix: str, providers: list[str] | None = None
+    def list_files(
+        self,
+        prefix: str,
+        extensions: list[str],
+        providers: list[str] | None = None,
     ) -> list[tuple[str, int]]:
-        """Return ``(key, size_bytes)`` pairs for all ``.parquet`` files under *prefix*.
+        """Return ``(key, size_bytes)`` pairs for files matching *extensions* under *prefix*.
 
         Keys are relative to the store root (e.g. ``schwab/2026/06/25/SPX.parquet``).
+        *extensions* should include the dot (e.g. ``[".parquet", ".csv", ".ndjson"]``).
         If *providers* is given, only scan those provider subdirectories.
         """
         ...
 
     def sha256(self, key: str) -> str:
         """Return the SHA-256 hex digest of the object at *key*."""
+        ...
+
+    def read_raw(self, key: str) -> bytes:
+        """Read a file and return its raw bytes."""
         ...
 
     def read_parquet(self, key: str) -> pa.Table:
@@ -45,8 +53,11 @@ class LocalFileStore:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def list_parquet(
-        self, prefix: str, providers: list[str] | None = None
+    def list_files(
+        self,
+        prefix: str,
+        extensions: list[str],
+        providers: list[str] | None = None,
     ) -> list[tuple[str, int]]:
         base = self._root / prefix
         if not base.is_dir():
@@ -57,17 +68,20 @@ class LocalFileStore:
         else:
             search_dirs = [d for d in sorted(base.iterdir()) if d.is_dir()]
 
+        ext_set = set(extensions)
         results: list[tuple[str, int]] = []
         for provider_dir in search_dirs:
             if not provider_dir.is_dir():
                 continue
-            for parquet_path in sorted(provider_dir.rglob("*.parquet")):
-                if not parquet_path.is_file():
+            for file_path in sorted(provider_dir.rglob("*")):
+                if not file_path.is_file():
                     continue
-                size = parquet_path.stat().st_size
+                if file_path.suffix not in ext_set:
+                    continue
+                size = file_path.stat().st_size
                 if size == 0:
                     continue
-                relative = str(parquet_path.relative_to(self._root))
+                relative = str(file_path.relative_to(self._root))
                 results.append((relative, size))
         return results
 
@@ -78,6 +92,9 @@ class LocalFileStore:
             while chunk := f.read(8192):
                 h.update(chunk)
         return h.hexdigest()
+
+    def read_raw(self, key: str) -> bytes:
+        return (self._root / key).read_bytes()
 
     def read_parquet(self, key: str) -> pa.Table:
         return pq.read_table(self._root / key)
@@ -103,10 +120,14 @@ class S3FileStore:
             region_name=region,
         )
 
-    def list_parquet(
-        self, prefix: str, providers: list[str] | None = None
+    def list_files(
+        self,
+        prefix: str,
+        extensions: list[str],
+        providers: list[str] | None = None,
     ) -> list[tuple[str, int]]:
         prefixes = [f"{prefix}/{p}/" for p in providers] if providers else [f"{prefix}/"]
+        ext_set = set(extensions)
 
         results: list[tuple[str, int]] = []
         for search_prefix in prefixes:
@@ -115,7 +136,8 @@ class S3FileStore:
                 for obj in page.get("Contents", []):
                     key: str = obj["Key"]
                     size: int = obj["Size"]
-                    if key.endswith(".parquet") and size > 0:
+                    suffix = key[key.rfind(".") :] if "." in key else ""
+                    if suffix in ext_set and size > 0:
                         results.append((key, size))
         results.sort()
         return results
@@ -127,7 +149,10 @@ class S3FileStore:
             h.update(chunk)
         return h.hexdigest()
 
-    def read_parquet(self, key: str) -> pa.Table:
+    def read_raw(self, key: str) -> bytes:
         resp = self._client.get_object(Bucket=self._bucket, Key=key)
-        data = resp["Body"].read()
+        return resp["Body"].read()
+
+    def read_parquet(self, key: str) -> pa.Table:
+        data = self.read_raw(key)
         return pq.read_table(io.BytesIO(data))
