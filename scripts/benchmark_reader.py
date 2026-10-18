@@ -72,9 +72,7 @@ def run(root: str, provider: str, interval_minutes: int) -> None:
     print(f"    → glob: {glob_pattern}")
 
     # Count matching files
-    from pathlib import Path as _P
-
-    matches = list(_P("/").glob(glob_pattern.lstrip("/")))
+    matches = list(Path("/").glob(glob_pattern.lstrip("/")))
     print(f"    → {len(matches)} parquet files matched")
 
     q = reader.options_query
