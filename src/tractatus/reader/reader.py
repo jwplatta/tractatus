@@ -188,6 +188,29 @@ class DataReader:
         cache_base = self._cfg.cache_dir / "options" / provider
         return str(cache_base / "**" / f"{root}_samples_*.parquet")
 
+    def ensure_parquet_files(
+        self,
+        root: str,
+        start_date: date,
+        end_date: date,
+        provider: str = "schwab",
+    ) -> list[str]:
+        """Ensure parquets for a date range are cached and return their paths.
+
+        Unlike :meth:`ensure_parquet_range` (which returns a glob), this returns
+        only the files that fall within [start_date, end_date].  Passing the
+        result to :class:`OptionsQueryClient` lookback methods avoids scanning
+        unrelated parquet files.
+        """
+        dates = self.list_sample_dates(root, provider)
+        paths: list[str] = []
+        for d in dates:
+            if start_date <= d <= end_date:
+                p = self.get_parquet(root, d, provider)
+                if p is not None:
+                    paths.append(str(p))
+        return paths
+
     # ------------------------------------------------------------------
     # Candles
     # ------------------------------------------------------------------

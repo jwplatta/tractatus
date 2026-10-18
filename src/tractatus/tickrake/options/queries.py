@@ -9,6 +9,22 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+# Type alias: callers may pass a glob string or an explicit list of file paths.
+ParquetSource = str | list[str] | list[Path]
+
+
+def _read_parquet_expr(source: ParquetSource) -> str:
+    """Return a DuckDB ``read_parquet(...)`` expression for *source*.
+
+    *source* may be a glob string (``'path/**/*.parquet'``) or a list of
+    concrete file paths.  DuckDB accepts both forms natively.
+    """
+    if isinstance(source, str):
+        return f"read_parquet('{source}')"
+    paths = ", ".join(f"'{p}'" for p in source)
+    return f"read_parquet([{paths}])"
+
+
 OPTIONS_DTYPES: dict[str, Any] = {
     "strike": "float64",
     "open_interest": "float64",
@@ -124,13 +140,14 @@ class OptionsQueryClient:
 
     def load_lookback(
         self,
-        parquet_glob: str,
+        parquet_glob: ParquetSource,
         expiry_range: tuple[date, date],
         interval_minutes: int,
     ) -> pd.DataFrame:
         """Load time-bucketed downsampled data across parquets filtered by expiry range."""
         start_str = expiry_range[0].isoformat()
         end_str = expiry_range[1].isoformat()
+        src = _read_parquet_expr(parquet_glob)
         query = f"""
             WITH bucketed AS (
                 SELECT *,
@@ -138,7 +155,7 @@ class OptionsQueryClient:
                         CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
                         * ({interval_minutes} * 60000) AS BIGINT)
                     ) AS interval_bucket
-                FROM read_parquet('{parquet_glob}')
+                FROM {src}
                 WHERE expiration_date BETWEEN '{start_str}' AND '{end_str}'
             ),
             ranked AS (
@@ -158,12 +175,13 @@ class OptionsQueryClient:
 
     def load_sample_window(
         self,
-        parquet_glob: str,
+        parquet_glob: ParquetSource,
         sample_start: date,
         interval_minutes: int,
     ) -> pd.DataFrame:
         """Load downsampled data across parquets filtered by sample timestamp >= sample_start."""
         start_str = sample_start.isoformat()
+        src = _read_parquet_expr(parquet_glob)
         query = f"""
             WITH bucketed AS (
                 SELECT sampled_at, strike, volatility, open_interest,
@@ -172,7 +190,7 @@ class OptionsQueryClient:
                         CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
                         * ({interval_minutes} * 60000) AS BIGINT)
                     ) AS interval_bucket
-                FROM read_parquet('{parquet_glob}')
+                FROM {src}
                 WHERE CAST(sampled_at AS TIMESTAMPTZ) >= TIMESTAMPTZ '{start_str}'
             ),
             ranked AS (
@@ -193,12 +211,13 @@ class OptionsQueryClient:
 
     def load_expiry_lookback(
         self,
-        parquet_glob: str,
+        parquet_glob: ParquetSource,
         expiry: date,
         interval_minutes: int,
     ) -> pd.DataFrame:
         """Load time-bucketed downsampled data for a single expiry across parquets."""
         expiry_str = expiry.isoformat()
+        src = _read_parquet_expr(parquet_glob)
         query = f"""
             WITH bucketed AS (
                 SELECT *,
@@ -206,7 +225,7 @@ class OptionsQueryClient:
                         CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
                         * ({interval_minutes} * 60000) AS BIGINT)
                     ) AS interval_bucket
-                FROM read_parquet('{parquet_glob}')
+                FROM {src}
                 WHERE expiration_date = '{expiry_str}'
             ),
             ranked AS (
