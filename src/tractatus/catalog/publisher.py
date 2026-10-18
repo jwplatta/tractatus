@@ -1,26 +1,40 @@
-"""Orchestrates discovery, normalization, and Iceberg append of parquet files."""
+"""Orchestrates discovery, normalization, and Iceberg append of data files."""
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import PurePosixPath
+from typing import Any
 
+import boto3
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from pyiceberg.catalog import Catalog, load_catalog
 
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import data_dir_name, discover_files
 from tractatus.catalog.file_store import FileStore, LocalFileStore, S3FileStore
 from tractatus.catalog.ledger import Ledger
-from tractatus.catalog.normalize import normalize_table
+from tractatus.catalog.normalize import normalize_raw, normalize_table
 from tractatus.catalog.schemas import TABLE_DEFS
 
 logger = logging.getLogger("tractatus.catalog")
 
 _DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
+
+
+def _sort_table(table: pa.Table, sort_keys: list[str]) -> pa.Table:
+    """Sort an Arrow table by the given keys. No-op if sort_keys is empty."""
+    if not sort_keys:
+        return table
+    indices = pc.sort_indices(table, sort_keys=[(k, "ascending") for k in sort_keys])
+    return table.take(indices)
 
 
 def _metadata_from_path(
@@ -51,17 +65,19 @@ class PublishResult:
 
     discovered: int = 0
     committed: int = 0
+    cached: int = 0
     errors: int = 0
     details: list[str] = field(default_factory=list)
 
 
 class Publisher:
-    """Discover, normalize, and append parquet files to an Iceberg table."""
+    """Discover, normalize, and append data files to an Iceberg table."""
 
     def __init__(self, config: CatalogConfig) -> None:
         self._config = config
         self._ledger = Ledger(config.database_url)
         self._store = self._build_store()
+        self._cache_client = self._build_cache_client()
 
     def _build_store(self) -> FileStore:
         """Build the appropriate file store from config."""
@@ -73,6 +89,18 @@ class Publisher:
                 secret_key=self._config.minio_secret_key or "",
             )
         return LocalFileStore(self._config.data_root)
+
+    def _build_cache_client(self) -> Any:
+        """Build an S3 client for the local cache MinIO bucket, if configured."""
+        if not (self._config.minio_endpoint and self._config.cache_bucket):
+            return None
+        return boto3.client(
+            "s3",
+            endpoint_url=self._config.minio_endpoint,
+            aws_access_key_id=self._config.minio_access_key or "",
+            aws_secret_access_key=self._config.minio_secret_key or "",
+            region_name="us-east-1",
+        )
 
     def close(self) -> None:
         self._ledger.close()
@@ -115,10 +143,11 @@ class Publisher:
         after_str = after.isoformat() if after else None
         before_str = before.isoformat() if before else None
 
-        committed, errors = self._append(
+        committed, cached, errors = self._append(
             table_name, limit=limit, after=after_str, before=before_str, providers=providers
         )
         result.committed = committed
+        result.cached = cached
         result.errors = errors
 
         duration_ms = int((time.monotonic() - run_start) * 1000)
@@ -128,6 +157,7 @@ class Publisher:
                 "table": table_name,
                 "discovered": result.discovered,
                 "committed": result.committed,
+                "cached": result.cached,
                 "errors": result.errors,
                 "duration_ms": duration_ms,
             }
@@ -142,7 +172,7 @@ class Publisher:
         after: date | None = None,
         before: date | None = None,
     ) -> int:
-        """Scan the file store for parquet files and record them in the ledger."""
+        """Scan the file store for data files and record them in the ledger."""
         files = discover_files(
             self._store, table_name=table_name, providers=providers, after=after, before=before
         )
@@ -155,6 +185,7 @@ class Publisher:
                 provider=f.provider,
                 root=f.root,
                 sample_date=f.sample_date.isoformat(),
+                file_format=f.file_format,
             )
         logger.info(
             {
@@ -173,35 +204,50 @@ class Publisher:
         after: str | None = None,
         before: str | None = None,
         providers: list[str] | None = None,
-    ) -> tuple[int, int]:
-        """Normalize and append pending files to Iceberg. Returns (committed, errors)."""
+    ) -> tuple[int, int, int]:
+        """Normalize and append pending files to Iceberg. Returns (committed, cached, errors)."""
         pending = self._ledger.pending(table_name, after=after, before=before, providers=providers)
         if limit is not None:
             pending = pending[:limit]
         if not pending:
-            return 0, 0
+            return 0, 0, 0
 
         catalog = self._iceberg_catalog()
         full_name = f"{self._config.glue_database}.{table_name}"
         iceberg_table = catalog.load_table(full_name)
         table_prefix = data_dir_name(table_name)
+        table_def = TABLE_DEFS[table_name]
 
         committed = 0
+        cached = 0
         errors = 0
 
         for record in pending:
             full_key = f"{table_prefix}/{record.path}"
 
             try:
-                arrow_table = self._store.read_parquet(full_key)
                 sample_dt, symbol, interval = _metadata_from_path(record.path, table_name)
-                normalized, diagnostics = normalize_table(
-                    arrow_table,
-                    table_name,
-                    sample_date=sample_dt,
-                    symbol=symbol,
-                    interval=interval,
-                )
+
+                if record.file_format in ("csv", "ndjson"):
+                    raw_data = self._store.read_raw(full_key)
+                    normalized, diagnostics = normalize_raw(
+                        raw_data,
+                        record.file_format,
+                        table_name,
+                        sample_date=sample_dt,
+                        symbol=symbol,
+                        interval=interval,
+                    )
+                else:
+                    arrow_table = self._store.read_parquet(full_key)
+                    normalized, diagnostics = normalize_table(
+                        arrow_table,
+                        table_name,
+                        sample_date=sample_dt,
+                        symbol=symbol,
+                        interval=interval,
+                    )
+
                 if diagnostics:
                     logger.info(
                         {
@@ -211,9 +257,20 @@ class Publisher:
                             "diagnostics": diagnostics,
                         }
                     )
+
+                # Pre-sort before Iceberg append (PyIceberg doesn't sort)
+                normalized = _sort_table(normalized, table_def.sort_keys)
+
                 iceberg_table.append(normalized)
                 self._ledger.mark_committed([record.path], table_name)
                 committed += 1
+
+                # Upload to cache MinIO if configured
+                cache_key = self._cache_to_minio(normalized, table_name, record.path)
+                if cache_key:
+                    self._ledger.mark_cached(record.path, table_name, cache_key)
+                    cached += 1
+
                 logger.info(
                     {
                         "event": "file_committed",
@@ -223,6 +280,7 @@ class Publisher:
                         "provider": record.provider,
                         "root": record.root,
                         "sample_date": record.sample_date,
+                        "cached": cache_key is not None,
                     }
                 )
             except Exception as exc:
@@ -243,10 +301,37 @@ class Publisher:
                 "event": "append_batch_completed",
                 "table": table_name,
                 "committed": committed,
+                "cached": cached,
                 "errors": errors,
             }
         )
-        return committed, errors
+        return committed, cached, errors
+
+    def _cache_to_minio(
+        self,
+        table: pa.Table,
+        table_name: str,
+        path: str,
+    ) -> str | None:
+        """Write parquet to the cache MinIO bucket. Returns cache_key or None."""
+        if self._cache_client is None:
+            return None
+
+        buf = io.BytesIO()
+        pq.write_table(table, buf)
+        buf.seek(0)
+
+        # Cache key mirrors the staging path but with .parquet extension
+        stem = PurePosixPath(path).stem
+        parent = str(PurePosixPath(path).parent)
+        cache_key = f"{table_name}/{parent}/{stem}.parquet"
+
+        self._cache_client.put_object(
+            Bucket=self._config.cache_bucket,
+            Key=cache_key,
+            Body=buf.getvalue(),
+        )
+        return cache_key
 
     def _iceberg_catalog(self) -> Catalog:
         """Load PyIceberg Glue catalog."""

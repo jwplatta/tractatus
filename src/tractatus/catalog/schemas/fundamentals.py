@@ -134,6 +134,12 @@ FUNDAMENTALS_TABLE = TableDef(
             name="sample_date_month",
         )
     ),
+    sort_keys=["sample_date", "symbol"],
+    properties={
+        "write.parquet.compression-codec": "zstd",
+        "write.parquet.compression-level": "3",
+        "write.parquet.row-group-limit": "50000",
+    },
 )
 
 # Date string columns that need casting during normalization.

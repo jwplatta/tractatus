@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pyiceberg.partitioning import PartitionSpec
 from pyiceberg.schema import Schema
@@ -15,3 +15,5 @@ class TableDef:
     name: str
     schema: Schema
     partition_spec: PartitionSpec
+    sort_keys: list[str] = field(default_factory=list)
+    properties: dict[str, str] = field(default_factory=dict)

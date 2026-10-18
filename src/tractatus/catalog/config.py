@@ -23,6 +23,7 @@ _ENV_NAMES: dict[str, str] = {
     "minio_bucket": "MINIO_BUCKET",
     "minio_access_key": "MINIO_ACCESS_KEY",
     "minio_secret_key": "MINIO_SECRET_KEY",
+    "cache_bucket": "CACHE_BUCKET",
 }
 
 
@@ -42,6 +43,7 @@ class CatalogConfig:
     minio_bucket: str | None = None
     minio_access_key: str | None = None
     minio_secret_key: str | None = None
+    cache_bucket: str | None = None
 
     @classmethod
     def load(cls, tractatus_config: TractatusConfig | None = None) -> CatalogConfig:
@@ -74,4 +76,5 @@ class CatalogConfig:
             minio_bucket=values.get("minio_bucket"),
             minio_access_key=values.get("minio_access_key"),
             minio_secret_key=values.get("minio_secret_key"),
+            cache_bucket=values.get("cache_bucket"),
         )

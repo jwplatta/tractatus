@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from typing import BinaryIO
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -143,7 +144,7 @@ def iso_string_to_timestamp(col: pa.Array) -> pa.Array:
 
 def write_canonical_parquet(
     table: pa.Table,
-    dest: Path,
+    dest: Path | BinaryIO,
     *,
     sort_keys: list[str],
     row_group_size: int,

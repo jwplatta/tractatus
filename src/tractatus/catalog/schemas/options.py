@@ -74,4 +74,10 @@ OPTIONS_TABLE = TableDef(
             name="sampled_at_month",
         )
     ),
+    sort_keys=["expiration_date", "sampled_at", "strike", "contract_type", "symbol"],
+    properties={
+        "write.parquet.compression-codec": "zstd",
+        "write.parquet.compression-level": "3",
+        "write.parquet.row-group-limit": "50000",
+    },
 )

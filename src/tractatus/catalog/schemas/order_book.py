@@ -68,4 +68,10 @@ ORDER_BOOK_TABLE = TableDef(
             name="sample_date_month",
         )
     ),
+    sort_keys=["received_at", "book_time"],
+    properties={
+        "write.parquet.compression-codec": "zstd",
+        "write.parquet.compression-level": "5",
+        "write.parquet.row-group-limit": "35000",
+    },
 )

@@ -58,4 +58,5 @@ def ensure_table(catalog: Catalog, database: str, table_name: str) -> Table:
             full_name,
             schema=table_def.schema,
             partition_spec=table_def.partition_spec,
+            properties=table_def.properties,
         )

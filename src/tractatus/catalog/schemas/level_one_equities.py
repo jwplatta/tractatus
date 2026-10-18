@@ -143,6 +143,12 @@ LEVEL_ONE_EQUITIES_TABLE = TableDef(
             name="sample_date_month",
         )
     ),
+    sort_keys=["received_at", "quote_time", "trade_time"],
+    properties={
+        "write.parquet.compression-codec": "zstd",
+        "write.parquet.compression-level": "3",
+        "write.parquet.row-group-limit": "150000",
+    },
 )
 
 # Mapping from extra_json key → Iceberg column name.
