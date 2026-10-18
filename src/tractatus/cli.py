@@ -370,7 +370,7 @@ def catalog_sync_ledger(
                     skipped += 1
                     continue
             else:
-                provider, root, sample_date_obj = parsed
+                provider, root, sample_date_obj, _metadata = parsed
                 sample_date = sample_date_obj.isoformat()
 
             existing = ledger.get(relative_path, table)
