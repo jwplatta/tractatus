@@ -321,7 +321,7 @@ class TestNormalizeFundamentals:
                 "pe_ratio": pa.array([25.0], type=pa.float64()),
                 "dividend_date": pa.array(["2026-10-06 00:00:00.0"], type=pa.string()),
                 "last_earnings_date": pa.array(["2026-09-30T16:00:00Z"], type=pa.string()),
-                "fetched_at": pa.array(["2026-10-15T12:00:00Z"], type=pa.string()),
+                "sampled_at": pa.array(["2026-10-15T12:00:00Z"], type=pa.string()),
             }
         )
 
@@ -337,7 +337,7 @@ class TestNormalizeFundamentals:
         assert result.column("last_earnings_date")[0].as_py() == datetime.datetime(
             2026, 9, 30, 16, 0, tzinfo=datetime.UTC
         )
-        assert result.column("fetched_at")[0].as_py() == datetime.datetime(
+        assert result.column("sampled_at")[0].as_py() == datetime.datetime(
             2026, 10, 15, 12, 0, tzinfo=datetime.UTC
         )
 
