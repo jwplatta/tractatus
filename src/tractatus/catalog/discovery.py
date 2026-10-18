@@ -141,8 +141,21 @@ def _parse_fundamentals(key: str) -> tuple[str, str, date] | None:
 
 
 def _parse_economic_events(key: str) -> tuple[str, str, date] | None:
-    """Economic events: provider/YYYY/MM/DD.{parquet,ndjson}"""
-    return _parse_fundamentals(key)
+    """Economic events: source/category/YYYY/MM/DD.{parquet,ndjson}"""
+    p = PurePosixPath(key)
+    if p.suffix not in (".parquet", ".ndjson"):
+        return None
+    parts = p.parts
+    # source / category / YYYY / MM / DD.{ext}
+    if len(parts) < 5:
+        return None
+    source = parts[0]
+    category = parts[1]
+    try:
+        sample_date = date(int(parts[2]), int(parts[3]), int(p.stem))
+    except ValueError:
+        return None
+    return source, category, sample_date
 
 
 _PARSERS: dict[str, Callable[[str], tuple[str, str, date] | None]] = {
