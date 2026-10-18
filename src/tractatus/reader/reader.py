@@ -185,8 +185,8 @@ class DataReader:
         for d in dates:
             if start_date <= d <= end_date:
                 self.get_parquet(root, d, provider)
-        cache_base = self._cfg.cache_dir / "options" / provider / "**" / "**" / "**"
-        return str(cache_base / f"{root}_samples_*.parquet")
+        cache_base = self._cfg.cache_dir / "options" / provider
+        return str(cache_base / "**" / f"{root}_samples_*.parquet")
 
     # ------------------------------------------------------------------
     # Candles
