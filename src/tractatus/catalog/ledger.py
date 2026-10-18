@@ -1,14 +1,16 @@
-"""Publication ledger for tracking file discovery and publication progress.
+"""Publication ledger for tracking file discovery, publication, and cache state.
 
 Uses SQLite by default (for local development and testing). Connects to
 PostgreSQL when the database URL starts with ``postgresql://``.
+
+Status flow: discovered → committed | error
 """
 
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,31 +28,37 @@ class FileRecord:
     provider: str
     root: str
     sample_date: str
+    file_format: str
     s3_key: str | None
     status: str
     error: str | None
     discovered_at: str
-    uploaded_at: str | None
     committed_at: str | None
+    cache_key: str | None
+    cached_at: str | None
+    last_accessed_at: str | None
     updated_at: str
 
 
 _CREATE_TABLE = """\
 CREATE TABLE IF NOT EXISTS catalog_files (
-    path          TEXT NOT NULL,
-    table_name    TEXT NOT NULL,
-    sha256        TEXT NOT NULL,
-    size_bytes    BIGINT NOT NULL,
-    provider      TEXT NOT NULL,
-    root          TEXT NOT NULL,
-    sample_date   TEXT NOT NULL,
-    s3_key        TEXT,
-    status        TEXT NOT NULL DEFAULT 'discovered',
-    error         TEXT,
-    discovered_at TEXT NOT NULL,
-    uploaded_at   TEXT,
-    committed_at  TEXT,
-    updated_at    TEXT NOT NULL,
+    path             TEXT NOT NULL,
+    table_name       TEXT NOT NULL,
+    sha256           TEXT NOT NULL,
+    size_bytes       BIGINT NOT NULL,
+    provider         TEXT NOT NULL,
+    root             TEXT NOT NULL,
+    sample_date      TEXT NOT NULL,
+    file_format      TEXT NOT NULL DEFAULT '',
+    s3_key           TEXT,
+    status           TEXT NOT NULL DEFAULT 'discovered',
+    error            TEXT,
+    discovered_at    TEXT NOT NULL,
+    committed_at     TEXT,
+    cache_key        TEXT,
+    cached_at        TEXT,
+    last_accessed_at TEXT,
+    updated_at       TEXT NOT NULL,
     PRIMARY KEY (path, table_name)
 )
 """
@@ -59,7 +67,8 @@ _CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_catalog_files_status ON catalog_
 
 _COLUMNS = (
     "path, table_name, sha256, size_bytes, provider, root, sample_date, "
-    "s3_key, status, error, discovered_at, uploaded_at, committed_at, updated_at"
+    "file_format, s3_key, status, error, discovered_at, committed_at, "
+    "cache_key, cached_at, last_accessed_at, updated_at"
 )
 
 
@@ -117,6 +126,8 @@ class Ledger:
     def _now() -> str:
         return datetime.now(UTC).isoformat()
 
+    # --- Discovery & publication ---
+
     def record_discovered(
         self,
         path: str,
@@ -126,17 +137,19 @@ class Ledger:
         provider: str,
         root: str,
         sample_date: str,
+        file_format: str = "",
     ) -> None:
         """Insert a new file or update an existing one if the hash changed."""
         now = self._now()
         self._execute(
             """\
             INSERT INTO catalog_files (path, table_name, sha256, size_bytes, provider, root,
-                                       sample_date, status, discovered_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
+                                       sample_date, file_format, status, discovered_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
             ON CONFLICT (path, table_name) DO UPDATE SET
                 sha256 = EXCLUDED.sha256,
                 size_bytes = EXCLUDED.size_bytes,
+                file_format = EXCLUDED.file_format,
                 status = CASE
                     WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN 'discovered'
                     ELSE catalog_files.status
@@ -149,27 +162,24 @@ class Ledger:
                     WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN NULL
                     ELSE catalog_files.s3_key
                 END,
-                uploaded_at = CASE
-                    WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN NULL
-                    ELSE catalog_files.uploaded_at
-                END,
                 committed_at = CASE
                     WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN NULL
                     ELSE catalog_files.committed_at
                 END,
                 updated_at = EXCLUDED.updated_at
             """,
-            (path, table_name, sha256, size_bytes, provider, root, sample_date, now, now),
-        )
-
-    def mark_uploaded(self, path: str, table_name: str, s3_key: str) -> None:
-        """Transition a file to uploaded status."""
-        now = self._now()
-        self._execute(
-            "UPDATE catalog_files SET status = 'uploaded', s3_key = %s, "
-            "uploaded_at = %s, error = NULL, updated_at = %s "
-            "WHERE path = %s AND table_name = %s",
-            (s3_key, now, now, path, table_name),
+            (
+                path,
+                table_name,
+                sha256,
+                size_bytes,
+                provider,
+                root,
+                sample_date,
+                file_format,
+                now,
+                now,
+            ),
         )
 
     def mark_committed(self, paths: list[str], table_name: str) -> None:
@@ -194,20 +204,6 @@ class Ledger:
             )
             self._conn.commit()
 
-    def mark_discovered_for_retry(self, path: str, table_name: str) -> None:
-        """Reset a file to discovered status after commit failure cleanup.
-
-        Clears s3_key, uploaded_at, committed_at, and error so the full
-        upload → commit cycle will be retried on the next run.
-        """
-        now = self._now()
-        self._execute(
-            "UPDATE catalog_files SET status = 'discovered', s3_key = NULL, "
-            "uploaded_at = NULL, committed_at = NULL, error = NULL, updated_at = %s "
-            "WHERE path = %s AND table_name = %s",
-            (now, path, table_name),
-        )
-
     def mark_error(self, path: str, table_name: str, error: str) -> None:
         """Record an error for a file."""
         now = self._now()
@@ -217,7 +213,7 @@ class Ledger:
             (error, now, path, table_name),
         )
 
-    def pending_upload(
+    def pending(
         self,
         table_name: str,
         after: str | None = None,
@@ -229,17 +225,83 @@ class Ledger:
             "discovered", table_name, after=after, before=before, providers=providers
         )
 
-    def pending_commit(
-        self,
-        table_name: str,
-        after: str | None = None,
-        before: str | None = None,
-        providers: list[str] | None = None,
-    ) -> list[FileRecord]:
-        """Return files with status=uploaded for the given table."""
-        return self._query_status(
-            "uploaded", table_name, after=after, before=before, providers=providers
+    # --- Cache management ---
+
+    def mark_cached(self, path: str, table_name: str, cache_key: str) -> None:
+        """Record that a file has been cached in local MinIO."""
+        now = self._now()
+        self._execute(
+            "UPDATE catalog_files SET cache_key = %s, cached_at = %s, "
+            "last_accessed_at = %s, updated_at = %s "
+            "WHERE path = %s AND table_name = %s",
+            (cache_key, now, now, now, path, table_name),
         )
+
+    def mark_cache_accessed(self, path: str, table_name: str) -> None:
+        """Update last_accessed_at for a cached file."""
+        now = self._now()
+        self._execute(
+            "UPDATE catalog_files SET last_accessed_at = %s, updated_at = %s "
+            "WHERE path = %s AND table_name = %s",
+            (now, now, path, table_name),
+        )
+
+    def clear_cache_entry(self, path: str, table_name: str) -> None:
+        """Clear cache fields for a file (after eviction)."""
+        now = self._now()
+        self._execute(
+            "UPDATE catalog_files SET cache_key = NULL, cached_at = NULL, "
+            "last_accessed_at = NULL, updated_at = %s "
+            "WHERE path = %s AND table_name = %s",
+            (now, path, table_name),
+        )
+
+    def cached_files(
+        self,
+        table_name: str | None = None,
+        older_than_days: int | None = None,
+        provider: str | None = None,
+        root: str | None = None,
+    ) -> list[FileRecord]:
+        """Return files that have cache entries, with optional filters."""
+        where = "WHERE cache_key IS NOT NULL"
+        params: list[Any] = []
+
+        if table_name:
+            where += " AND table_name = %s"
+            params.append(table_name)
+        if older_than_days is not None:
+            where += " AND last_accessed_at < %s"
+            cutoff = (datetime.now(UTC) - timedelta(days=older_than_days)).isoformat()
+            params.append(cutoff)
+        if provider:
+            where += " AND provider = %s"
+            params.append(provider)
+        if root:
+            where += " AND root = %s"
+            params.append(root)
+
+        rows = self._fetchall(
+            f"SELECT {_COLUMNS} FROM catalog_files {where} ORDER BY path",
+            tuple(params),
+        )
+        return [FileRecord(*row) for row in rows]
+
+    def cache_summary(self, table_name: str | None = None) -> dict[str, int]:
+        """Return cache stats: total cached files and total bytes."""
+        where = "WHERE cache_key IS NOT NULL"
+        params: list[Any] = []
+        if table_name:
+            where += " AND table_name = %s"
+            params.append(table_name)
+
+        row = self._fetchone(
+            f"SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM catalog_files {where}",
+            tuple(params),
+        )
+        return {"cached_files": row[0], "cached_bytes": row[1]}
+
+    # --- Queries ---
 
     def summary(self, table_name: str | None = None) -> dict[str, int]:
         """Return counts by status, optionally filtered by table."""
