@@ -7,15 +7,19 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import PurePosixPath
 
 from tractatus.catalog.file_store import FileStore
 
 _DATE_DIR_PATTERN = re.compile(r"^(\d{4})/(\d{2})/(\d{2})$")
-_OPTIONS_FILENAME = re.compile(r"^(.+)_samples_(\d{4}-\d{2}-\d{2})\.parquet$")
-_SYMBOL_TIMESTAMP = re.compile(r"^(.+?)_\d+Z\.parquet$")
+
+# Options CSV: {ROOT}_exp{EXP}_{DATE}_{TIME}.csv
+# e.g. SPXW_exp2026-10-18_2026-10-18_14-30-00.csv
+_OPTIONS_CSV_FILENAME = re.compile(
+    r"^(.+)_exp(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\.csv$"
+)
 
 
 @dataclass
@@ -28,21 +32,23 @@ class DiscoveredFile:
     sample_date: date
     sha256: str
     size_bytes: int
-    file_format: str = "parquet"  # "parquet", "csv", or "ndjson"
-    metadata: dict[str, str] | None = None
+    file_format: str = ""  # "csv" or "ndjson"
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
-# Per-table key parsers: (relative_key) → (provider, root, date)
+# Per-table key parsers: (relative_key) → (provider, root, date, metadata)
 #
 # Keys are relative to the store root and always use forward slashes.
 # The table-specific prefix (e.g. "options/") has already been stripped —
 # keys start with the provider directory.
 # ---------------------------------------------------------------------------
 
+ParseResult = tuple[str, str, date, dict[str, str]] | None
 
-def _parse_options(key: str) -> tuple[str, str, date] | None:
-    """Options: provider/YYYY/MM/DD/{ROOT}_samples_{YYYY-MM-DD}.parquet"""
+
+def _parse_options(key: str) -> ParseResult:
+    """Options CSV: provider/YYYY/MM/DD/{ROOT}_exp{EXP}_{DATE}_{TIME}.csv"""
     p = PurePosixPath(key)
     parts = p.parent.parts
     if len(parts) < 4:
@@ -51,29 +57,23 @@ def _parse_options(key: str) -> tuple[str, str, date] | None:
     date_dir = "/".join(parts[1:4])
     if not _DATE_DIR_PATTERN.match(date_dir):
         return None
-    match = _OPTIONS_FILENAME.match(p.name)
-    if match:
-        root = match.group(1)
-        try:
-            sample_date = date.fromisoformat(match.group(2))
-        except ValueError:
-            return None
-    else:
-        root = p.stem
-        try:
-            sample_date = date(int(parts[1]), int(parts[2]), int(parts[3]))
-        except ValueError:
-            return None
-    return provider, root, sample_date
-
-
-def _parse_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
-    """Level-one / order-book: provider/YYYY/MM/DD/SYMBOL_TIMESTAMPZ.parquet"""
-    p = PurePosixPath(key)
-    match = _SYMBOL_TIMESTAMP.match(p.name)
+    match = _OPTIONS_CSV_FILENAME.match(p.name)
     if not match:
         return None
-    symbol = match.group(1)
+    root = match.group(1)
+    try:
+        sample_date = date.fromisoformat(match.group(3))
+    except ValueError:
+        return None
+    expiration = match.group(2)
+    return provider, root, sample_date, {"expiration": expiration}
+
+
+def _parse_symbol_ndjson(key: str) -> ParseResult:
+    """Level-one / order-book NDJSON: provider/YYYY/MM/DD/SYMBOL.ndjson"""
+    p = PurePosixPath(key)
+    if p.suffix != ".ndjson":
+        return None
     parts = p.parent.parts
     if len(parts) < 4:
         return None
@@ -81,55 +81,54 @@ def _parse_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
     date_dir = "/".join(parts[1:4])
     if not _DATE_DIR_PATTERN.match(date_dir):
         return None
+    symbol = p.stem
     try:
         sample_date = date(int(parts[1]), int(parts[2]), int(parts[3]))
     except ValueError:
         return None
-    return provider, symbol, sample_date
+    return provider, symbol, sample_date, {}
 
 
-def _parse_equities_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
-    """Equities level-one: same as symbol_timestamp but excludes ^ prefix (futures)."""
+def _parse_equities_ndjson(key: str) -> ParseResult:
+    """Equities level-one: same as symbol NDJSON but excludes ^ prefix (futures)."""
     p = PurePosixPath(key)
     if p.stem.startswith("^"):
         return None
-    return _parse_symbol_timestamp(key)
+    return _parse_symbol_ndjson(key)
 
 
-def _parse_futures_symbol_timestamp(key: str) -> tuple[str, str, date] | None:
-    """Futures level-one: same as symbol_timestamp but only ^ prefix symbols."""
+def _parse_futures_ndjson(key: str) -> ParseResult:
+    """Futures level-one: same as symbol NDJSON but only ^ prefix symbols."""
     p = PurePosixPath(key)
     if not p.stem.startswith("^"):
         return None
-    return _parse_symbol_timestamp(key)
+    return _parse_symbol_ndjson(key)
 
 
-def _parse_candles(key: str) -> tuple[str, str, date] | None:
-    """Candles: provider/interval/YYYY/SYMBOL.{parquet,csv}"""
+def _parse_candles(key: str) -> ParseResult:
+    """Candles CSV: provider/frequency/SYMBOL.csv"""
     p = PurePosixPath(key)
-    if p.suffix not in (".parquet", ".csv"):
+    if p.suffix != ".csv":
         return None
     parts = p.parts
-    # provider / interval / YYYY / SYMBOL.parquet
-    if len(parts) < 4:
+    # provider / frequency / SYMBOL.csv
+    if len(parts) < 3:
         return None
     provider = parts[0]
-    try:
-        year = int(parts[2])
-    except ValueError:
-        return None
+    frequency = parts[1]
     symbol = p.stem
-    sample_date = date(year, 1, 1)
-    return provider, symbol, sample_date
+    # Candles don't have a date directory — use epoch as placeholder
+    sample_date = date(1970, 1, 1)
+    return provider, symbol, sample_date, {"frequency": frequency}
 
 
-def _parse_fundamentals(key: str) -> tuple[str, str, date] | None:
-    """Fundamentals: provider/YYYY/MM/DD.{parquet,ndjson}"""
+def _parse_fundamentals(key: str) -> ParseResult:
+    """Fundamentals NDJSON: provider/YYYY/MM/DD.ndjson"""
     p = PurePosixPath(key)
-    if p.suffix not in (".parquet", ".ndjson"):
+    if p.suffix != ".ndjson":
         return None
     parts = p.parts
-    # provider / YYYY / MM / DD.{ext}
+    # provider / YYYY / MM / DD.ndjson
     if len(parts) < 4:
         return None
     provider = parts[0]
@@ -137,16 +136,16 @@ def _parse_fundamentals(key: str) -> tuple[str, str, date] | None:
         sample_date = date(int(parts[1]), int(parts[2]), int(p.stem))
     except ValueError:
         return None
-    return provider, "all", sample_date
+    return provider, "all", sample_date, {}
 
 
-def _parse_economic_events(key: str) -> tuple[str, str, date] | None:
-    """Economic events: source/category/YYYY/MM/DD.{parquet,ndjson}"""
+def _parse_economic_events(key: str) -> ParseResult:
+    """Economic events NDJSON: source/category/YYYY/MM/DD.ndjson"""
     p = PurePosixPath(key)
-    if p.suffix not in (".parquet", ".ndjson"):
+    if p.suffix != ".ndjson":
         return None
     parts = p.parts
-    # source / category / YYYY / MM / DD.{ext}
+    # source / category / YYYY / MM / DD.ndjson
     if len(parts) < 5:
         return None
     source = parts[0]
@@ -155,14 +154,14 @@ def _parse_economic_events(key: str) -> tuple[str, str, date] | None:
         sample_date = date(int(parts[2]), int(parts[3]), int(p.stem))
     except ValueError:
         return None
-    return source, category, sample_date
+    return source, category, sample_date, {}
 
 
-_PARSERS: dict[str, Callable[[str], tuple[str, str, date] | None]] = {
+_PARSERS: dict[str, Callable[[str], ParseResult]] = {
     "options": _parse_options,
-    "level_one_equities": _parse_equities_symbol_timestamp,
-    "level_one_futures": _parse_futures_symbol_timestamp,
-    "order_book": _parse_symbol_timestamp,
+    "level_one_equities": _parse_equities_ndjson,
+    "level_one_futures": _parse_futures_ndjson,
+    "order_book": _parse_symbol_ndjson,
     "candles": _parse_candles,
     "fundamentals": _parse_fundamentals,
     "economic_events": _parse_economic_events,
@@ -174,18 +173,16 @@ _DATA_DIR_NAMES: dict[str, str] = {
     "level_one_futures": "level_one",
 }
 
-# File extensions to scan per table.  Discovery will match any of these.
+# File extensions to scan per table.
 _FILE_EXTENSIONS: dict[str, list[str]] = {
-    "options": [".parquet", ".csv"],
-    "level_one_equities": [".parquet", ".ndjson"],
-    "level_one_futures": [".parquet", ".ndjson"],
-    "order_book": [".parquet", ".ndjson"],
-    "candles": [".parquet", ".csv"],
-    "fundamentals": [".parquet", ".ndjson"],
-    "economic_events": [".parquet", ".ndjson"],
+    "options": [".csv"],
+    "level_one_equities": [".ndjson"],
+    "level_one_futures": [".ndjson"],
+    "order_book": [".ndjson"],
+    "candles": [".csv"],
+    "fundamentals": [".ndjson"],
+    "economic_events": [".ndjson"],
 }
-
-_DEFAULT_EXTENSIONS = [".parquet"]
 
 
 def data_dir_name(table_name: str) -> str:
@@ -232,7 +229,7 @@ def discover_files(
         )
 
     prefix = data_dir_name(table_name)
-    extensions = _FILE_EXTENSIONS.get(table_name, _DEFAULT_EXTENSIONS)
+    extensions = _FILE_EXTENSIONS[table_name]
     entries = store.list_files(prefix, extensions=extensions, providers=providers)
 
     results: list[DiscoveredFile] = []
@@ -247,7 +244,7 @@ def discover_files(
         if parsed is None:
             continue
 
-        provider, root, sample_date = parsed
+        provider, root, sample_date, metadata = parsed
 
         if after is not None and sample_date < after:
             continue
@@ -263,6 +260,7 @@ def discover_files(
                 sha256=store.sha256(full_key),
                 size_bytes=size_bytes,
                 file_format=_file_format_from_key(full_key),
+                metadata=metadata,
             )
         )
 
