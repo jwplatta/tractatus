@@ -350,7 +350,6 @@ def catalog_sync_ledger(
                 continue
 
             relative_path = s3_path[len(prefix) :]
-            s3_key = f"{config.glue_database}/{table}/{relative_path}"
 
             # Parse provider/root/sample_date from the relative path
             parsed = _parse_options(relative_path)
@@ -387,7 +386,6 @@ def catalog_sync_ledger(
                 root=root,
                 sample_date=sample_date,
             )
-            ledger.mark_uploaded(relative_path, table, s3_key)
             ledger.mark_committed([relative_path], table)
             synced += 1
 

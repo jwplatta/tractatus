@@ -175,9 +175,7 @@ class Publisher:
         providers: list[str] | None = None,
     ) -> tuple[int, int]:
         """Normalize and append pending files to Iceberg. Returns (committed, errors)."""
-        pending = self._ledger.pending_upload(
-            table_name, after=after, before=before, providers=providers
-        )
+        pending = self._ledger.pending(table_name, after=after, before=before, providers=providers)
         if limit is not None:
             pending = pending[:limit]
         if not pending:
