@@ -138,8 +138,7 @@ def ndjson_to_arrow(data: bytes) -> pa.Table:
 
 def iso_string_to_timestamp(col: pa.Array) -> pa.Array:
     """Convert a string column of UTC ISO 8601 timestamps to timestamp[us, UTC]."""
-    parsed = pc.strptime(col, format="%Y-%m-%dT%H:%M:%SZ", unit="us")
-    return pc.assume_timezone(parsed, timezone="UTC")
+    return pc.cast(col, _TS_US_UTC)
 
 
 def write_canonical_parquet(

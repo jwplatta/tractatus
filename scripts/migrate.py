@@ -67,13 +67,17 @@ def _epoch_ms_to_iso_string(col: pa.Array) -> pa.Array:
 def convert_options(table: pa.Table) -> pa.Table:
     """Convert old options parquet to normalizer-compatible format.
 
-    Old format: 31 cols, sampled_at as timestamp, expiration_date as date32.
-    Normalizer expects 41-col CSV contract. Missing cols will be added as null
-    by align_to_schema. The types for sampled_at (timestamp) and
-    expiration_date (date32) pass _types_compatible checks.
+    Old parquets vary from 26 to 31 columns. The normalizer's
+    validate_input_schema requires all 41 expected columns, so we add
+    any missing ones as null here to pass validation. align_to_schema
+    handles final column ordering and type casting.
     """
-    # No column changes needed — the normalizer handles the existing types
-    # and align_to_schema adds missing columns as null.
+    from tractatus.catalog.normalize.options import _EXPECTED_INPUT  # noqa: PLC0415
+
+    n = len(table)
+    for col_name, col_type in _EXPECTED_INPUT.items():
+        if col_name not in table.column_names:
+            table = table.append_column(col_name, pa.nulls(n, type=col_type))
     return table
 
 

@@ -114,6 +114,9 @@ def _unpack_extra_json(
         if col_name in timestamp_fields:
             int_arr = pa.array(values, type=pa.int64())
             arr = epoch_ms_to_timestamp(int_arr)
+        elif pa.types.is_large_string(target_type) or pa.types.is_string(target_type):
+            # JSON values may be ints/floats for string-typed columns — coerce
+            arr = pa.array([str(v) if v is not None else None for v in values], type=target_type)
         else:
             arr = pa.array(values, type=target_type)
         table = table.append_column(col_name, arr)
