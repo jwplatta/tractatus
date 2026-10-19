@@ -1,6 +1,17 @@
 # Tractatus
 
-Shared computation and data-access library for trading research. Provides tickrake data access, options calculations (GEX, vol, OI, z-scores), and market analysis utilities.
+Shared computation and data-access library for trading research. Tractatus is part of the quant platform — see the `quant-platform` skill for platform-wide context, cross-repository boundaries, and data flow. It owns normalization, canonical parquet generation, Iceberg lakehouse publishing, local MinIO cache management, and the research-facing historical data interface.
+
+## Skills
+
+Pull relevant skills before starting work:
+
+```bash
+skillex pull quant-platform --agent claude   # platform architecture, ownership boundaries, cross-repo work
+skillex pull project-backlog --agent claude  # create and manage backlog items in docs/backlog/
+```
+
+Use `skillex list` to discover other available skills.
 
 ## Commands
 
@@ -18,35 +29,99 @@ make test        # pytest tests/ -q
 make fix
 ```
 
-## Pre-commit / pre-merge requirement
+## Contributing
 
-Always run `make check` before committing or opening a PR. All four checks must pass.
+Follow `CONTRIBUTING.md` for workflow, commit conventions, changelog requirements, and PR guidelines. These are guidelines — the user may explicitly ask to bypass specific ones. When they do, proceed without friction.
+
+Key points:
+- Run `make check` before every commit or PR. All four checks must pass.
+- Use conventional commits (`feat:`, `fix:`, `chore:`, etc.).
+- Stage specific files by name — never `git add .` or `git add -A` or a directory path.
+- Update `CHANGELOG.md` with every PR.
+- Keep changes targeted; do not mix unrelated work into the same branch.
 
 ## Architecture
 
 ```
 src/tractatus/
-  tickrake/          # Data access layer for tickrake (options, candles, order book)
-    client.py        # TickrakeClient facade
-    config.py        # TickrakeConfig (env-var-backed)
-    filesystem.py    # Local filesystem discovery
-    intraday.py      # S3/MinIO intraday snapshot access
-    archive.py       # Historical archive access
-  calc/              # Pure computation modules (no UI dependencies)
-    gex.py           # Gamma exposure calculations
-    gex_term_structure.py  # GEX term structure
-    vol.py           # Volatility (IV, RV, spreads, VIX correlation)
-    ma.py            # Moving averages (SMA, VWAP)
-    oi.py            # Open interest matrix
-    oi_zscore.py     # OI z-score calculation
-    iv_zscore.py     # IV z-score calculation
-    fixed_strike_vol.py  # Fixed-strike IV matrix
+  catalog/             # Lakehouse publishing pipeline
+    config.py          # CatalogConfig (env-var-backed; requires ICEBERG_BUCKET)
+    discovery.py       # File discovery from MinIO staging bucket
+    file_store.py      # FileStore protocol: LocalFileStore + S3FileStore
+    ledger.py          # Postgres/SQLite publication ledger (discovered → committed)
+    publisher.py       # Normalize → sort → Iceberg append → MinIO cache
+    normalize/         # Per-dataset normalizers (CSV/NDJSON/parquet → Arrow)
+      common.py        # Shared helpers: timestamp casting, write_canonical_parquet
+      options.py
+      level_one.py
+      order_book.py
+      candles.py
+      fundamentals.py
+      economic_events.py
+    schemas/           # PyIceberg schemas, partition specs, table properties
+      options.py
+      level_one_equities.py
+      level_one_futures.py
+      order_book.py
+      candles.py
+      fundamentals.py
+      economic_events.py
+  reader/              # Research-facing historical data interface
+    config.py          # ReaderConfig (env-var-backed)
+    reader.py          # DataReader: 3-tier resolution (local cache → MinIO → Iceberg)
+    iceberg_store.py   # Read-only PyIceberg Glue catalog access
+    minio_store.py     # MinIO boto3 client wrapper
+  tickrake/            # Legacy access layer for old tickrake local filesystem data
+    options/
+      queries.py       # Options query helpers
+  calc/                # Pure computation modules (no I/O, no UI dependencies)
+    gex.py             # Gamma exposure
+    gex_term_structure.py
+    vol.py             # Volatility (IV, RV, spreads, VIX correlation)
+    ma.py              # Moving averages (SMA, VWAP)
+    oi.py              # Open interest matrix
+    oi_zscore.py
+    iv_zscore.py
+    fixed_strike_vol.py
+  cli.py               # `catalog` CLI: publish, discover, status, cache, reset, purge
+  config.py            # TractatusConfig (AWS region/profile, data root)
+  logging.py           # Structured logging helpers
+```
+
+## Data flow
+
+```
+tickrake-staging (MinIO)
+        │  raw CSV/NDJSON
+        ▼
+  discovery.py  ──→  ledger (discovered)
+        │
+        ▼
+  publisher.py
+    normalize → sort → write_canonical_parquet
+        │
+        ├──→  Iceberg append (S3 / Glue catalog)  ──→  ledger (committed)
+        └──→  MinIO cache (tractatus-lakehouse)    ──→  ledger (cached)
+
+DataReader (reader/)
+    1. local ~/.tractatus/cache/
+    2. MinIO cache (tractatus-lakehouse)
+    3. Iceberg scan (S3 Glue)
 ```
 
 ## Gotchas
 
-- This package is **read-only** against tickrake data. Never write, modify, or delete files under `~/.tickrake/`.
-- `TickrakeConfig` uses `data_dir` (not `options_dir`). Derived paths like `provider_options_dir(provider)` build from there.
-- mypy is strict — all new code needs type annotations.
+- Iceberg table appends go through `table.append()` — never raw boto3 S3 uploads. S3 Glacier IR charges apply even after deletion; minimize churn.
+- The Glue catalog and S3 bucket are in **us-east-1**. Using the wrong region silently returns "database not found."
+- mypy is strict — all new code needs full type annotations.
 - `ruff` is the linter/formatter (not black/flake8); line length is 100.
-- Calc modules must remain pure (no Streamlit, no I/O). They take DataFrames in and return DataFrames/values out.
+- Calc modules must remain pure — no I/O, no Streamlit. They take DataFrames in and return DataFrames/values out.
+- `scripts/` contains one-off migration and verification scripts. They are not part of the production library.
+
+## Backlog
+
+Use the `project-backlog` skill to create and manage work items in `docs/backlog/`. Items are committed markdown files — not ephemeral notes.
+
+```bash
+python3 .claude/skills/project-backlog/scripts/search.py --status not-started --priority high
+```
