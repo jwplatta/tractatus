@@ -1,35 +1,35 @@
 #!/usr/bin/env python3
-"""Migrate existing ~/.tickrake/data/ parquets into the Iceberg lakehouse.
+"""Prepare migration: normalize old tickrake parquets to local directory.
 
-Reads old-format parquets, converts columns to match the new normalizer
-expectations, then feeds through normalize_table → sort → iceberg append.
+Reads old-format parquets, converts columns, normalizes, sorts, and writes
+canonical parquet files to an output directory. No S3 or ledger interaction.
+
+For level_one and order_book, multiple intraday snapshots per (symbol, date)
+are consolidated into a single file (1 file per symbol per date).
 
 Usage:
-    python scripts/migrate.py --table options --provider schwab --limit 10 --dry-run
-    python scripts/migrate.py --table level_one_equities --after 2026-10-01
-    python scripts/migrate.py --table order_book --provider schwab
-    python scripts/migrate.py --table candles --provider schwab
-    python scripts/migrate.py --table fundamentals --provider schwab
+    python scripts/migrate_prepare.py --table options --provider schwab -o /tmp/migrate
+    python scripts/migrate_prepare.py --table level_one_equities -o /tmp/migrate
+    python scripts/migrate_prepare.py --table order_book -o /tmp/migrate --limit 10
+    python scripts/migrate_prepare.py --table candles -o /tmp/migrate
+    python scripts/migrate_prepare.py --table fundamentals -o /tmp/migrate
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
-import os
 import re
 import sys
 import time
+from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
-from pyiceberg.catalog import load_catalog
 
-from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_table
 from tractatus.catalog.publisher import _sort_table
 from tractatus.catalog.schemas import TABLE_DEFS
@@ -38,17 +38,23 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
-logger = logging.getLogger("migrate")
-
-DATABASE_URL = "postgresql://tractatus_user:tractatus@127.0.0.1:5432/tractatus"
-
-_DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
+logger = logging.getLogger("migrate_prepare")
 
 # Old options filename: {ROOT}_samples_{DATE}.parquet
 _OPTIONS_FILENAME_RE = re.compile(r"^(.+)_samples_(\d{4}-\d{2}-\d{2})\.parquet$")
 
 # Old level_one / order_book filename: {SYMBOL}_{HHMMSSZ}.parquet
 _SNAPSHOT_FILENAME_RE = re.compile(r"^(.+)_\d{6}Z\.parquet$")
+
+# Datasets where multiple intraday snapshot files per (symbol, date) must be
+# consolidated into a single file before normalization.
+_GROUPED_DATASETS = {"level_one_equities", "level_one_futures", "order_book"}
+
+# Data directory names on disk (may differ from table name)
+_DATA_DIRS: dict[str, str] = {
+    "level_one_equities": "level_one",
+    "level_one_futures": "level_one",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +66,6 @@ def _epoch_ms_to_iso_string(col: pa.Array) -> pa.Array:
     """Convert int64 epoch-milliseconds to UTC ISO 8601 string column."""
     micros = pc.multiply(col.cast(pa.int64()), 1000)
     ts = micros.cast(pa.timestamp("us", tz="UTC"))
-    # Format as "YYYY-MM-DDTHH:MM:SSZ"
     return pc.strftime(ts, format="%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -69,8 +74,7 @@ def convert_options(table: pa.Table) -> pa.Table:
 
     Old parquets vary from 26 to 31 columns. The normalizer's
     validate_input_schema requires all 41 expected columns, so we add
-    any missing ones as null here to pass validation. align_to_schema
-    handles final column ordering and type casting.
+    any missing ones as null here to pass validation.
     """
     from tractatus.catalog.normalize.options import _EXPECTED_INPUT  # noqa: PLC0415
 
@@ -78,6 +82,12 @@ def convert_options(table: pa.Table) -> pa.Table:
     for col_name, col_type in _EXPECTED_INPUT.items():
         if col_name not in table.column_names:
             table = table.append_column(col_name, pa.nulls(n, type=col_type))
+        elif col_name == "non_standard" and pa.types.is_string(table.column(col_name).type):
+            # Some old parquets have non_standard as string ("true"/"false") instead of bool
+            idx = table.column_names.index(col_name)
+            col = table.column(col_name)
+            bools = pc.equal(col, "true")
+            table = table.set_column(idx, col_name, bools)
     return table
 
 
@@ -141,12 +151,6 @@ _CONVERTERS: dict[str, callable] = {
     "order_book": convert_order_book,
     "candles": convert_candles,
     "fundamentals": convert_fundamentals,
-}
-
-# Data directory names on disk (may differ from table name)
-_DATA_DIRS: dict[str, str] = {
-    "level_one_equities": "level_one",
-    "level_one_futures": "level_one",
 }
 
 
@@ -215,10 +219,8 @@ def _parse_old_path(
         return provider, root, sample_dt
 
     if table_name in ("level_one_equities", "level_one_futures", "order_book"):
-        # Path: provider/YYYY/MM/DD/{SYMBOL}_{HHMMSSZ}.parquet
         m = _SNAPSHOT_FILENAME_RE.match(path.name)
         root = m.group(1) if m else path.stem
-        # Extract date from directory
         rel = path.relative_to(data_root / _DATA_DIRS.get(table_name, table_name) / provider)
         parts = rel.parent.parts
         if len(parts) >= 3:
@@ -230,17 +232,14 @@ def _parse_old_path(
         return None
 
     if table_name == "candles":
-        # Path: provider/frequency/[year/]SYMBOL.parquet
         rel = path.relative_to(data_root / "candles" / provider)
         parts = rel.parts
         if len(parts) >= 2:
             root = path.stem
-            # Candles don't have a meaningful sample_date, use epoch
             return provider, root, date(1970, 1, 1)
         return None
 
     if table_name == "fundamentals":
-        # Path: provider/YYYY/MM/DD.parquet
         rel = path.relative_to(data_root / "fundamentals" / provider)
         parts = rel.parts
         if len(parts) >= 3:
@@ -254,14 +253,6 @@ def _parse_old_path(
     return None
 
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _candle_metadata(path: Path, data_root: Path, provider: str) -> tuple[str | None, str | None]:
     """Extract (symbol, interval) for candles from file path."""
     rel = path.relative_to(data_root / "candles" / provider)
@@ -271,18 +262,26 @@ def _candle_metadata(path: Path, data_root: Path, provider: str) -> tuple[str | 
     return None, None
 
 
+def _group_files(
+    files: list[tuple[Path, str, str, date]],
+) -> dict[tuple[str, str, date], list[tuple[Path, str, str, date]]]:
+    """Group files by (provider, symbol, sample_date)."""
+    groups: dict[tuple[str, str, date], list[tuple[Path, str, str, date]]] = defaultdict(list)
+    for entry in files:
+        path, prov, root, sample_dt = entry
+        groups[(prov, root, sample_dt)].append(entry)
+    return dict(groups)
+
+
 # ---------------------------------------------------------------------------
-# Main migration logic
+# Main preparation logic
 # ---------------------------------------------------------------------------
 
 
-def migrate(
+def prepare(
     table_name: str,
     data_root: Path,
-    iceberg_bucket: str,
-    glue_database: str,
-    aws_region: str,
-    aws_profile: str | None,
+    output_dir: Path,
     provider: str | None = None,
     after: date | None = None,
     before: date | None = None,
@@ -295,159 +294,212 @@ def migrate(
 
     converter = _CONVERTERS[table_name]
     table_def = TABLE_DEFS[table_name]
+    table_output = output_dir / table_name
+    table_output.mkdir(parents=True, exist_ok=True)
 
     logger.info("Discovering old parquets for %s...", table_name)
     files = _discover_old_parquets(
         data_root, table_name, provider=provider, after=after, before=before
     )
-    logger.info("Found %d files", len(files))
+    logger.info("Found %d source files", len(files))
 
-    if limit:
-        files = files[:limit]
+    if table_name in _GROUPED_DATASETS:
+        groups = _group_files(files)
+        if limit:
+            groups = dict(list(groups.items())[:limit])
 
-    if dry_run:
-        for path, prov, root, sample_dt in files:
+        if dry_run:
+            for (prov, root, sample_dt), group_files in groups.items():
+                logger.info(
+                    "  [dry-run] %s/%s/%s (%d files)",
+                    prov,
+                    root,
+                    sample_dt,
+                    len(group_files),
+                )
             logger.info(
-                "  [dry-run] %s (provider=%s, root=%s, date=%s)", path.name, prov, root, sample_dt
+                "Dry run: %d groups (%d files)",
+                len(groups),
+                sum(len(v) for v in groups.values()),
             )
-        logger.info("Dry run complete. %d files would be migrated.", len(files))
-        return
+            return
 
-    # Connect to ledger + Iceberg
-    ledger = Ledger(DATABASE_URL)
-    props: dict[str, str] = {
-        "type": "glue",
-        "glue.region": aws_region,
-        "s3.region": aws_region,
-        "warehouse": f"s3://{iceberg_bucket}",
-    }
-    if aws_profile:
-        props["glue.profile-name"] = aws_profile
-        props["s3.profile-name"] = aws_profile
-    catalog = load_catalog("glue", **props)
-    iceberg_table = catalog.load_table(f"{glue_database}.{table_name}")
+        _prepare_grouped(groups, table_name, converter, table_def, table_output)
+    else:
+        if limit:
+            files = files[:limit]
 
-    committed = 0
-    skipped = 0
+        if dry_run:
+            for path, prov, root, sample_dt in files:
+                logger.info(
+                    "  [dry-run] %s (provider=%s, root=%s, date=%s)",
+                    path.name,
+                    prov,
+                    root,
+                    sample_dt,
+                )
+            logger.info("Dry run: %d files", len(files))
+            return
+
+        _prepare_individual(files, table_name, converter, table_def, table_output, data_root)
+
+
+def _prepare_grouped(
+    groups: dict[tuple[str, str, date], list[tuple[Path, str, str, date]]],
+    table_name: str,
+    converter: callable,
+    table_def: object,
+    output_dir: Path,
+) -> None:
+    """Prepare grouped datasets (1 file per symbol per date)."""
+    written = 0
     errors = 0
     start = time.monotonic()
+    total_rows = 0
 
-    try:
-        for path, prov, root, sample_dt in files:
-            # Build a relative path key for the ledger
-            rel_key = _ledger_key(path, data_root, table_name, prov)
-
-            # Skip if already committed
-            existing = ledger.get(rel_key, table_name)
-            if existing and existing.status == "committed":
-                skipped += 1
-                continue
-
-            try:
+    for (prov, root, sample_dt), group_files in groups.items():
+        try:
+            tables = []
+            for path, _, _, _ in group_files:
                 arrow_table = pq.read_table(path)
                 converted = converter(arrow_table)
+                tables.append(converted)
 
-                # Derive metadata for normalizers that need it
-                kwargs: dict[str, object] = {"sample_date": sample_dt}
-                if table_name == "candles":
-                    symbol, interval = _candle_metadata(path, data_root, prov)
-                    kwargs["symbol"] = symbol
-                    kwargs["interval"] = interval
+            combined = pa.concat_tables(tables, promote_options="permissive")
+            normalized, diagnostics = normalize_table(
+                combined, table_name, sample_date=sample_dt
+            )
+            normalized = _sort_table(normalized, table_def.sort_keys)
 
-                normalized, diagnostics = normalize_table(converted, table_name, **kwargs)
+            # Use provider/root/date structure for output
+            out_dir = output_dir / prov / str(sample_dt.year) / f"{sample_dt.month:02d}" / f"{sample_dt.day:02d}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"{root}.parquet"
+            pq.write_table(normalized, out_path)
+            written += 1
+            total_rows += len(normalized)
 
-                # Pre-sort
-                normalized = _sort_table(normalized, table_def.sort_keys)
-
-                # Append to Iceberg
-                iceberg_table.append(normalized)
-
-                # Record in ledger
-                sha = _sha256_file(path)
-                size = path.stat().st_size
-                ledger.record_discovered(
-                    path=rel_key,
-                    table_name=table_name,
-                    sha256=sha,
-                    size_bytes=size,
-                    provider=prov,
-                    root=root,
-                    sample_date=sample_dt.isoformat(),
-                    file_format="parquet",
+            if written % 100 == 0:
+                elapsed = time.monotonic() - start
+                logger.info(
+                    "Progress: %d written, %d errors, %d rows (%.1fs)",
+                    written,
+                    errors,
+                    total_rows,
+                    elapsed,
                 )
-                ledger.mark_committed([rel_key], table_name)
-                committed += 1
 
-                if committed % 100 == 0:
-                    elapsed = time.monotonic() - start
-                    logger.info(
-                        "Progress: %d committed, %d skipped, %d errors (%.1fs)",
-                        committed,
-                        skipped,
-                        errors,
-                        elapsed,
-                    )
-
-            except Exception:
-                logger.exception("Failed to migrate %s", path)
-                errors += 1
-
-    finally:
-        ledger.close()
+        except Exception:
+            logger.exception("Failed: %s/%s/%s", prov, root, sample_dt)
+            errors += 1
 
     elapsed = time.monotonic() - start
     logger.info(
-        "Migration complete: %d committed, %d skipped, %d errors (%.1fs)",
-        committed,
-        skipped,
+        "Complete: %d files written, %d errors, %d total rows (%.1fs)",
+        written,
         errors,
+        total_rows,
         elapsed,
     )
 
 
-def _ledger_key(path: Path, data_root: Path, table_name: str, provider: str) -> str:
-    """Build a ledger-compatible relative path key."""
-    dir_name = _DATA_DIRS.get(table_name, table_name)
-    base = data_root / dir_name
-    return str(path.relative_to(base))
+def _prepare_individual(
+    files: list[tuple[Path, str, str, date]],
+    table_name: str,
+    converter: callable,
+    table_def: object,
+    output_dir: Path,
+    data_root: Path,
+) -> None:
+    """Prepare datasets that are already 1 file per logical unit."""
+    written = 0
+    errors = 0
+    start = time.monotonic()
+    total_rows = 0
+
+    for path, prov, root, sample_dt in files:
+        try:
+            arrow_table = pq.read_table(path)
+            converted = converter(arrow_table)
+
+            kwargs: dict[str, object] = {"sample_date": sample_dt}
+            if table_name == "candles":
+                symbol, interval = _candle_metadata(path, data_root, prov)
+                kwargs["symbol"] = symbol
+                kwargs["interval"] = interval
+
+            normalized, diagnostics = normalize_table(converted, table_name, **kwargs)
+            normalized = _sort_table(normalized, table_def.sort_keys)
+
+            # Mirror original directory structure
+            if table_name == "options":
+                out_dir = output_dir / prov / str(sample_dt.year) / f"{sample_dt.month:02d}" / f"{sample_dt.day:02d}"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{root}_samples_{sample_dt}.parquet"
+            elif table_name == "candles":
+                symbol, interval = _candle_metadata(path, data_root, prov)
+                out_dir = output_dir / prov / (interval or "unknown")
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{root}.parquet"
+            elif table_name == "fundamentals":
+                out_dir = output_dir / prov / str(sample_dt.year) / f"{sample_dt.month:02d}"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{sample_dt.day:02d}.parquet"
+            else:
+                out_dir = output_dir / prov
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{root}_{sample_dt}.parquet"
+
+            pq.write_table(normalized, out_path)
+            written += 1
+            total_rows += len(normalized)
+
+            if written % 100 == 0:
+                elapsed = time.monotonic() - start
+                logger.info(
+                    "Progress: %d written, %d errors, %d rows (%.1fs)",
+                    written,
+                    errors,
+                    total_rows,
+                    elapsed,
+                )
+
+        except Exception:
+            logger.exception("Failed: %s", path)
+            errors += 1
+
+    elapsed = time.monotonic() - start
+    logger.info(
+        "Complete: %d files written, %d errors, %d total rows (%.1fs)",
+        written,
+        errors,
+        total_rows,
+        elapsed,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Migrate old tickrake parquets to Iceberg lakehouse"
+        description="Prepare migration: normalize old parquets to local directory"
     )
     parser.add_argument("--table", required=True, choices=sorted(_CONVERTERS.keys()))
+    parser.add_argument("-o", "--output", required=True, help="Output directory for normalized parquet")
     parser.add_argument("--provider", default=None, help="Filter to specific provider")
     parser.add_argument("--after", default=None, help="sample_date >= YYYY-MM-DD")
     parser.add_argument("--before", default=None, help="sample_date < YYYY-MM-DD")
-    parser.add_argument("--limit", type=int, default=None, help="Max files to process")
-    parser.add_argument("--dry-run", action="store_true", help="List files without migrating")
+    parser.add_argument("--limit", type=int, default=None, help="Max files/groups to process")
+    parser.add_argument("--dry-run", action="store_true", help="List files without writing")
     parser.add_argument("--data-root", default=str(Path.home() / ".tickrake" / "data"))
-    parser.add_argument("--iceberg-bucket", default=None, help="S3 bucket (or set ICEBERG_BUCKET)")
-    parser.add_argument("--glue-database", default="tractatus")
-    parser.add_argument("--aws-region", default="us-east-1")
-    parser.add_argument("--aws-profile", default=None)
 
     args = parser.parse_args()
 
-    iceberg_bucket = args.iceberg_bucket or os.environ.get("ICEBERG_BUCKET")
-    aws_profile = args.aws_profile or os.environ.get("AWS_PROFILE")
-    if not iceberg_bucket and not args.dry_run:
-        parser.error("--iceberg-bucket or ICEBERG_BUCKET env var required")
-
-    parsed_after = date.fromisoformat(args.after) if args.after else None
-    parsed_before = date.fromisoformat(args.before) if args.before else None
-
-    migrate(
+    prepare(
         table_name=args.table,
         data_root=Path(args.data_root),
-        iceberg_bucket=iceberg_bucket or "",
-        glue_database=args.glue_database,
-        aws_region=args.aws_region,
-        aws_profile=aws_profile,
+        output_dir=Path(args.output),
         provider=args.provider,
-        after=parsed_after,
-        before=parsed_before,
+        after=date.fromisoformat(args.after) if args.after else None,
+        before=date.fromisoformat(args.before) if args.before else None,
         limit=args.limit,
         dry_run=args.dry_run,
     )
