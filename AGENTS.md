@@ -39,6 +39,7 @@ Key points:
 - Stage specific files by name — never `git add .` or `git add -A` or a directory path.
 - Update `CHANGELOG.md` with every PR.
 - Keep changes targeted; do not mix unrelated work into the same branch.
+- When a question is asked, answer the question. Do not make assumptions about what to do next.
 
 ## Architecture
 
