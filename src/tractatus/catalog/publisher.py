@@ -265,6 +265,21 @@ class Publisher:
                 self._ledger.mark_committed([record.path], table_name)
                 committed += 1
 
+                # Read parquet bytes added from the Iceberg snapshot summary.
+                # Added-files-size is defined by the Iceberg spec as the total
+                # size of data files added in the snapshot. Absent = None so
+                # callers can omit the ratio rather than fabricate a value.
+                try:
+                    snap = iceberg_table.current_snapshot()
+                    raw = (
+                        snap.summary["added-files-size"]
+                        if snap and snap.summary and "added-files-size" in snap.summary
+                        else None
+                    )
+                    parquet_bytes_added: int | None = int(raw) if raw is not None else None
+                except Exception:
+                    parquet_bytes_added = None
+
                 # Upload to cache MinIO if configured
                 cache_key = self._cache_to_minio(normalized, table_name, record.path)
                 if cache_key:
@@ -276,7 +291,8 @@ class Publisher:
                         "event": "file_committed",
                         "table": table_name,
                         "path": record.path,
-                        "size_bytes": record.size_bytes,
+                        "source_bytes": record.size_bytes,
+                        "parquet_bytes_added": parquet_bytes_added,
                         "provider": record.provider,
                         "root": record.root,
                         "sample_date": record.sample_date,
