@@ -15,9 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
-import sys
 import time
-from datetime import date
 from pathlib import Path
 
 from tractatus.catalog.ledger import Ledger
@@ -133,7 +131,13 @@ def backfill(
                 rel_key = str(p.relative_to(table_dir))
 
                 if dry_run:
-                    logger.info("  [dry-run] %s (provider=%s, root=%s, date=%s)", rel_key, provider, root, sample_date)
+                    logger.info(
+                        "  [dry-run] %s (provider=%s, root=%s, date=%s)",
+                        rel_key,
+                        provider,
+                        root,
+                        sample_date,
+                    )
                     recorded += 1
                     continue
 
@@ -197,7 +201,9 @@ def backfill(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill ledger from prepared migration files")
-    parser.add_argument("-i", "--input", required=True, help="Root migration directory (e.g. /tmp/migrate)")
+    parser.add_argument(
+        "-i", "--input", required=True, help="Root migration directory (e.g. /tmp/migrate)"
+    )
     parser.add_argument("--table", default=None, help="Backfill a specific table (default: all)")
     parser.add_argument("--dry-run", action="store_true", help="List files without recording")
 

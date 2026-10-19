@@ -366,13 +366,17 @@ def _prepare_grouped(
                 tables.append(converted)
 
             combined = pa.concat_tables(tables, promote_options="permissive")
-            normalized, diagnostics = normalize_table(
-                combined, table_name, sample_date=sample_dt
-            )
+            normalized, diagnostics = normalize_table(combined, table_name, sample_date=sample_dt)
             normalized = _sort_table(normalized, table_def.sort_keys)
 
             # Use provider/root/date structure for output
-            out_dir = output_dir / prov / str(sample_dt.year) / f"{sample_dt.month:02d}" / f"{sample_dt.day:02d}"
+            out_dir = (
+                output_dir
+                / prov
+                / str(sample_dt.year)
+                / f"{sample_dt.month:02d}"
+                / f"{sample_dt.day:02d}"
+            )
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"{root}.parquet"
             pq.write_table(normalized, out_path)
@@ -433,7 +437,13 @@ def _prepare_individual(
 
             # Mirror original directory structure
             if table_name == "options":
-                out_dir = output_dir / prov / str(sample_dt.year) / f"{sample_dt.month:02d}" / f"{sample_dt.day:02d}"
+                out_dir = (
+                    output_dir
+                    / prov
+                    / str(sample_dt.year)
+                    / f"{sample_dt.month:02d}"
+                    / f"{sample_dt.day:02d}"
+                )
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_path = out_dir / f"{root}_samples_{sample_dt}.parquet"
             elif table_name == "candles":
@@ -483,7 +493,9 @@ def main() -> None:
         description="Prepare migration: normalize old parquets to local directory"
     )
     parser.add_argument("--table", required=True, choices=sorted(_CONVERTERS.keys()))
-    parser.add_argument("-o", "--output", required=True, help="Output directory for normalized parquet")
+    parser.add_argument(
+        "-o", "--output", required=True, help="Output directory for normalized parquet"
+    )
     parser.add_argument("--provider", default=None, help="Filter to specific provider")
     parser.add_argument("--after", default=None, help="sample_date >= YYYY-MM-DD")
     parser.add_argument("--before", default=None, help="sample_date < YYYY-MM-DD")

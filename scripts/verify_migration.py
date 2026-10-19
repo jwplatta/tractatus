@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import logging
+import random
 import sys
-import time
 from pathlib import Path
 
 import boto3
-import pyarrow as pa
 import pyarrow.parquet as pq
 from pyiceberg.catalog.glue import GlueCatalog
 
@@ -94,9 +94,7 @@ def check_ledger(ledger: Ledger, tables: list[str]) -> list[str]:
         expected = EXPECTED_PREPARED.get(table_name, 0)
 
         if committed != expected:
-            errors.append(
-                f"LEDGER {table_name}: expected {expected} committed, got {committed}"
-            )
+            errors.append(f"LEDGER {table_name}: expected {expected} committed, got {committed}")
             logger.error("FAIL %s: expected %d committed, got %d", table_name, expected, committed)
         else:
             logger.info("OK   %s: %d committed", table_name, committed)
@@ -128,9 +126,7 @@ def check_prepared_files(input_dir: Path, tables: list[str]) -> list[str]:
         expected = EXPECTED_PREPARED.get(table_name, 0)
 
         if count != expected:
-            errors.append(
-                f"PREPARED {table_name}: expected {expected} files, got {count}"
-            )
+            errors.append(f"PREPARED {table_name}: expected {expected} files, got {count}")
             logger.error("FAIL %s: expected %d files, got %d", table_name, expected, count)
         else:
             logger.info("OK   %s: %d prepared files", table_name, count)
@@ -138,9 +134,7 @@ def check_prepared_files(input_dir: Path, tables: list[str]) -> list[str]:
     return errors
 
 
-def check_minio_cache(
-    minio_client: boto3.client, ledger: Ledger, tables: list[str]
-) -> list[str]:
+def check_minio_cache(minio_client: boto3.client, ledger: Ledger, tables: list[str]) -> list[str]:
     """Check that every ledger record has a corresponding MinIO cache file."""
     errors: list[str] = []
     logger.info("--- MinIO cache checks ---")
@@ -159,9 +153,7 @@ def check_minio_cache(
         expected = EXPECTED_PREPARED.get(table_name, 0)
 
         if len(minio_keys) != expected:
-            errors.append(
-                f"MINIO {table_name}: expected {expected} files, got {len(minio_keys)}"
-            )
+            errors.append(f"MINIO {table_name}: expected {expected} files, got {len(minio_keys)}")
             logger.error(
                 "FAIL %s: expected %d cache files, got %d",
                 table_name,
@@ -193,12 +185,8 @@ def check_minio_cache(
 
         extra_in_minio = minio_keys - ledger_paths
         if extra_in_minio:
-            errors.append(
-                f"MINIO {table_name}: {len(extra_in_minio)} cache files not in ledger"
-            )
-            logger.error(
-                "FAIL %s: %d MinIO files not in ledger", table_name, len(extra_in_minio)
-            )
+            errors.append(f"MINIO {table_name}: {len(extra_in_minio)} cache files not in ledger")
+            logger.error("FAIL %s: %d MinIO files not in ledger", table_name, len(extra_in_minio))
             for p in sorted(extra_in_minio)[:5]:
                 logger.error("  extra: %s", p)
 
@@ -253,8 +241,6 @@ def spot_check_data(
     Iceberg for the same (provider, root/symbol, date) and compare row counts
     and a few column values.
     """
-    import random
-
     errors: list[str] = []
     logger.info("--- Spot checks (%d per table) ---", num_checks)
 
@@ -277,8 +263,6 @@ def spot_check_data(
             # Read same file from MinIO cache
             cache_key = f"{table_name}/{rel}"
             try:
-                import io
-
                 resp = minio_client.get_object(Bucket=CACHE_BUCKET, Key=cache_key)
                 cache_bytes = resp["Body"].read()
                 cache_table = pq.read_table(io.BytesIO(cache_bytes))
@@ -286,8 +270,7 @@ def spot_check_data(
 
                 if local_rows != cache_rows:
                     errors.append(
-                        f"SPOT {table_name}/{rel}: local={local_rows} rows, "
-                        f"cache={cache_rows} rows"
+                        f"SPOT {table_name}/{rel}: local={local_rows} rows, cache={cache_rows} rows"
                     )
                     logger.error(
                         "FAIL %s: row mismatch local=%d cache=%d",
@@ -296,9 +279,7 @@ def spot_check_data(
                         cache_rows,
                     )
                 elif local_table.schema != cache_table.schema:
-                    errors.append(
-                        f"SPOT {table_name}/{rel}: schema mismatch"
-                    )
+                    errors.append(f"SPOT {table_name}/{rel}: schema mismatch")
                     logger.error("FAIL %s: schema mismatch", rel)
                 else:
                     logger.info(
@@ -363,9 +344,7 @@ def spot_check_data(
     return errors
 
 
-def _build_row_filter(
-    table_name: str, parts: tuple[str, ...], path: Path
-) -> str | None:
+def _build_row_filter(table_name: str, parts: tuple[str, ...], path: Path) -> str | None:
     """Build an Iceberg row filter to query the same slice as a prepared file."""
     if table_name == "options":
         # parts: provider/YYYY/MM/DD/ROOT_samples_YYYY-MM-DD.parquet
@@ -396,24 +375,17 @@ def _build_row_filter(
         if len(parts) >= 5:
             sample_date = f"{parts[1]}-{parts[2]}-{parts[3]}"
             symbol = path.stem
-            return (
-                f"symbol == '{symbol}' "
-                f"AND sample_date == '{sample_date}'"
-            )
+            return f"symbol == '{symbol}' AND sample_date == '{sample_date}'"
     elif table_name == "candles":
         # parts: provider/frequency/SYMBOL.parquet
         if len(parts) >= 3:
             interval = parts[1]
             symbol = path.stem
-            return (
-                f"symbol == '{symbol}' "
-                f"AND interval == '{interval}'"
-            )
-    elif table_name == "fundamentals":
+            return f"symbol == '{symbol}' AND interval == '{interval}'"
+    elif table_name == "fundamentals" and len(parts) >= 4:
         # parts: provider/YYYY/MM/DD.parquet
-        if len(parts) >= 4:
-            sample_date = f"{parts[1]}-{parts[2]}-{path.stem}"
-            return f"sample_date == '{sample_date}'"
+        sample_date = f"{parts[1]}-{parts[2]}-{path.stem}"
+        return f"sample_date == '{sample_date}'"
     return None
 
 
@@ -421,8 +393,6 @@ def check_sha256_sample(
     input_dir: Path, ledger: Ledger, tables: list[str], num_checks: int
 ) -> list[str]:
     """Verify that ledger SHA256 values match the actual prepared files."""
-    import random
-
     errors: list[str] = []
     logger.info("--- SHA256 checks (%d per table) ---", num_checks)
 
@@ -513,9 +483,7 @@ def main() -> None:
         # 6. Spot checks: local vs cache vs Iceberg
         if not args.skip_iceberg:
             all_errors.extend(
-                spot_check_data(
-                    catalog, minio_client, input_dir, tables, args.spot_checks
-                )
+                spot_check_data(catalog, minio_client, input_dir, tables, args.spot_checks)
             )
 
     finally:

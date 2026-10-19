@@ -138,9 +138,13 @@ def main() -> None:
         description="Publish prepared migration parquets to Iceberg lakehouse"
     )
     parser.add_argument("--table", required=True, choices=TABLE_NAMES)
-    parser.add_argument("-i", "--input", required=True, help="Directory with prepared parquet files")
+    parser.add_argument(
+        "-i", "--input", required=True, help="Directory with prepared parquet files"
+    )
     parser.add_argument("--limit", type=int, default=None, help="Max files to publish")
-    parser.add_argument("--batch-size", type=int, default=50, help="Files per Iceberg append (default 50)")
+    parser.add_argument(
+        "--batch-size", type=int, default=50, help="Files per Iceberg append (default 50)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="List files without publishing")
     parser.add_argument("--iceberg-bucket", default=None, help="S3 bucket (or set ICEBERG_BUCKET)")
     parser.add_argument("--glue-database", default="tractatus")

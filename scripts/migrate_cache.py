@@ -111,7 +111,9 @@ def main() -> None:
         description="Upload prepared migration parquets to MinIO cache"
     )
     parser.add_argument("--table", required=True, help="Table name (used as cache key prefix)")
-    parser.add_argument("-i", "--input", required=True, help="Directory with prepared parquet files")
+    parser.add_argument(
+        "-i", "--input", required=True, help="Directory with prepared parquet files"
+    )
     parser.add_argument("--limit", type=int, default=None, help="Max files to upload")
     parser.add_argument("--dry-run", action="store_true", help="List files without uploading")
 
