@@ -9,6 +9,40 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+# Type alias: callers may pass a glob string or an explicit list of file paths.
+ParquetSource = str | list[str] | list[Path]
+
+
+def _read_parquet_expr(source: ParquetSource) -> str:
+    """Return a DuckDB ``read_parquet(...)`` expression for *source*.
+
+    *source* may be a glob string (``'path/**/*.parquet'``) or a list of
+    concrete file paths.  DuckDB accepts both forms natively.
+    """
+    if isinstance(source, str):
+        return f"read_parquet('{source}')"
+    paths = ", ".join(f"'{p}'" for p in source)
+    return f"read_parquet([{paths}])"
+
+
+# Columns required by lookback CTEs for partitioning and ordering.
+_LOOKBACK_REQUIRED = {"sampled_at", "expiration_date", "strike", "contract_type"}
+
+
+def _cte_columns(columns: list[str] | None) -> str:
+    """Build the SELECT list for a lookback CTE.
+
+    When *columns* is ``None`` returns ``*``.  Otherwise returns the union of
+    the requested columns and the columns required for windowing, so the
+    CTE can partition/order correctly and the final SELECT can project only
+    what the caller asked for.
+    """
+    if columns is None:
+        return "*"
+    merged = dict.fromkeys([*columns, *_LOOKBACK_REQUIRED])
+    return ", ".join(merged)
+
+
 OPTIONS_DTYPES: dict[str, Any] = {
     "strike": "float64",
     "open_interest": "float64",
@@ -72,20 +106,54 @@ class OptionsQueryClient:
         parquet_path: Path,
         expiry: date,
         sampled_at: datetime,
+        columns: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Load a single snapshot for one expiry/sampled_at from *parquet_path*."""
+        """Load a single snapshot for one expiry/sampled_at from *parquet_path*.
+
+        Parameters
+        ----------
+        parquet_path : Path
+            Local path to a cached options parquet file (from ``DataReader.get_parquet``).
+        expiry : date
+            Expiration date to filter on.
+        sampled_at : datetime
+            Exact snapshot timestamp to retrieve.
+        columns : list[str] | None
+            Column names to return.  ``None`` (default) returns all columns.
+
+            >>> q.load_snapshot(path, exp, ts, columns=["strike", "bid", "ask"])
+        """
+        cols = ", ".join(columns) if columns else "*"
         df = self._conn.execute(
-            "SELECT * FROM read_parquet(?)"
+            f"SELECT {cols} FROM read_parquet(?)"
             " WHERE expiration_date = ?"
             " AND CAST(sampled_at AS TIMESTAMPTZ) = CAST(? AS TIMESTAMPTZ)",
             [str(parquet_path), expiry.isoformat(), sampled_at.isoformat()],
         ).df()
         return _normalize_df(df)
 
-    def load_expiry(self, parquet_path: Path, expiry: date) -> pd.DataFrame:
-        """Load all snapshots for *expiry* from *parquet_path*, ordered by sampled_at."""
+    def load_expiry(
+        self,
+        parquet_path: Path,
+        expiry: date,
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Load all snapshots for *expiry* from *parquet_path*, ordered by sampled_at.
+
+        Parameters
+        ----------
+        parquet_path : Path
+            Local path to a cached options parquet file.
+        expiry : date
+            Expiration date to filter on.
+        columns : list[str] | None
+            Column names to return.  ``None`` (default) returns all columns.
+
+            >>> q.load_expiry(path, exp, columns=["strike", "volatility", "open_interest"])
+        """
+        cols = ", ".join(columns) if columns else "*"
         df = self._conn.execute(
-            "SELECT * FROM read_parquet(?) WHERE expiration_date = ? ORDER BY sampled_at",
+            f"SELECT {cols} FROM read_parquet(?) WHERE expiration_date = ? ORDER BY sampled_at",
             [str(parquet_path), expiry.isoformat()],
         ).df()
         return _normalize_df(df)
@@ -124,21 +192,48 @@ class OptionsQueryClient:
 
     def load_lookback(
         self,
-        parquet_glob: str,
+        parquet_glob: ParquetSource,
         expiry_range: tuple[date, date],
         interval_minutes: int,
+        columns: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Load time-bucketed downsampled data across parquets filtered by expiry range."""
+        """Load time-bucketed downsampled data across parquets filtered by expiry range.
+
+        Parameters
+        ----------
+        parquet_glob : str | list[str] | list[Path]
+            A glob pattern (``'cache/**/*.parquet'``) or an explicit list of file paths.
+            Prefer passing a file list from ``DataReader.ensure_parquet_files`` to avoid
+            scanning unrelated parquets.
+        expiry_range : tuple[date, date]
+            ``(start, end)`` expiration date range (inclusive).
+        interval_minutes : int
+            Downsample bucket width in minutes.  Within each bucket the most recent
+            snapshot per (expiry, strike, contract_type) is kept.
+        columns : list[str] | None
+            Column names to return.  ``None`` (default) returns all columns.
+            Partition columns (``sampled_at``, ``expiration_date``, ``strike``,
+            ``contract_type``) are always read internally but only appear in the
+            output when requested or when ``columns`` is ``None``.
+
+            >>> files = reader.ensure_parquet_files("SPXW", start, end)
+            >>> q.load_lookback(files, (exp_start, exp_end), 30,
+            ...     columns=["strike", "bid", "ask", "volatility"])
+        """
         start_str = expiry_range[0].isoformat()
         end_str = expiry_range[1].isoformat()
+        src = _read_parquet_expr(parquet_glob)
+        # The CTE needs partition/order columns; the final SELECT returns only requested cols.
+        cte_cols = _cte_columns(columns)
+        final_cols = ", ".join(columns) if columns else "* EXCLUDE (interval_bucket, rn)"
         query = f"""
             WITH bucketed AS (
-                SELECT *,
+                SELECT {cte_cols},
                     epoch_ms(
                         CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
                         * ({interval_minutes} * 60000) AS BIGINT)
                     ) AS interval_bucket
-                FROM read_parquet('{parquet_glob}')
+                FROM {src}
                 WHERE expiration_date BETWEEN '{start_str}' AND '{end_str}'
             ),
             ranked AS (
@@ -149,7 +244,7 @@ class OptionsQueryClient:
                     ) AS rn
                 FROM bucketed
             )
-            SELECT * EXCLUDE (interval_bucket, rn)
+            SELECT {final_cols}
             FROM ranked
             WHERE rn = 1
             ORDER BY sampled_at, expiration_date
@@ -158,21 +253,39 @@ class OptionsQueryClient:
 
     def load_sample_window(
         self,
-        parquet_glob: str,
+        parquet_glob: ParquetSource,
         sample_start: date,
         interval_minutes: int,
+        columns: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Load downsampled data across parquets filtered by sample timestamp >= sample_start."""
+        """Load downsampled data across parquets filtered by sample timestamp >= sample_start.
+
+        Parameters
+        ----------
+        parquet_glob : str | list[str] | list[Path]
+            A glob pattern or explicit file list (see ``load_lookback``).
+        sample_start : date
+            Only include rows with ``sampled_at >= sample_start``.
+        interval_minutes : int
+            Downsample bucket width in minutes.
+        columns : list[str] | None
+            Column names to return.  ``None`` (default) returns all columns.
+
+            >>> q.load_sample_window(files, start, 30,
+            ...     columns=["strike", "volatility", "underlying_price"])
+        """
         start_str = sample_start.isoformat()
+        src = _read_parquet_expr(parquet_glob)
+        cte_cols = _cte_columns(columns)
+        final_cols = ", ".join(columns) if columns else "* EXCLUDE (interval_bucket, rn)"
         query = f"""
             WITH bucketed AS (
-                SELECT sampled_at, strike, volatility, open_interest,
-                       underlying_price, expiration_date, contract_type,
+                SELECT {cte_cols},
                     epoch_ms(
                         CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
                         * ({interval_minutes} * 60000) AS BIGINT)
                     ) AS interval_bucket
-                FROM read_parquet('{parquet_glob}')
+                FROM {src}
                 WHERE CAST(sampled_at AS TIMESTAMPTZ) >= TIMESTAMPTZ '{start_str}'
             ),
             ranked AS (
@@ -183,8 +296,7 @@ class OptionsQueryClient:
                     ) AS rn
                 FROM bucketed
             )
-            SELECT sampled_at, strike, volatility, open_interest,
-                   underlying_price, expiration_date, contract_type
+            SELECT {final_cols}
             FROM ranked
             WHERE rn = 1
             ORDER BY sampled_at, expiration_date
@@ -193,20 +305,39 @@ class OptionsQueryClient:
 
     def load_expiry_lookback(
         self,
-        parquet_glob: str,
+        parquet_glob: ParquetSource,
         expiry: date,
         interval_minutes: int,
+        columns: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Load time-bucketed downsampled data for a single expiry across parquets."""
+        """Load time-bucketed downsampled data for a single expiry across parquets.
+
+        Parameters
+        ----------
+        parquet_glob : str | list[str] | list[Path]
+            A glob pattern or explicit file list (see ``load_lookback``).
+        expiry : date
+            Single expiration date to filter on.
+        interval_minutes : int
+            Downsample bucket width in minutes.
+        columns : list[str] | None
+            Column names to return.  ``None`` (default) returns all columns.
+
+            >>> q.load_expiry_lookback(files, exp, 30,
+            ...     columns=["strike", "bid", "ask", "delta", "gamma"])
+        """
         expiry_str = expiry.isoformat()
+        src = _read_parquet_expr(parquet_glob)
+        cte_cols = _cte_columns(columns)
+        final_cols = ", ".join(columns) if columns else "* EXCLUDE (interval_bucket, rn)"
         query = f"""
             WITH bucketed AS (
-                SELECT *,
+                SELECT {cte_cols},
                     epoch_ms(
                         CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
                         * ({interval_minutes} * 60000) AS BIGINT)
                     ) AS interval_bucket
-                FROM read_parquet('{parquet_glob}')
+                FROM {src}
                 WHERE expiration_date = '{expiry_str}'
             ),
             ranked AS (
@@ -217,7 +348,7 @@ class OptionsQueryClient:
                     ) AS rn
                 FROM bucketed
             )
-            SELECT * EXCLUDE (interval_bucket, rn)
+            SELECT {final_cols}
             FROM ranked
             WHERE rn = 1
             ORDER BY sampled_at
