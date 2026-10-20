@@ -15,12 +15,10 @@ No arguments needed — picks sensible expirations automatically.
 
 from __future__ import annotations
 
-import io
+import os
 import re
 import tempfile
-import os
 from datetime import date, timedelta
-from pathlib import Path
 
 import boto3
 import duckdb
@@ -86,6 +84,7 @@ def load_parquet(s3, key: str) -> pd.DataFrame:
 # Core analyses
 # ---------------------------------------------------------------------------
 
+
 def intraday_oi_stability(df: pd.DataFrame, expiry: date, label: str) -> None:
     """Q1: Does OI change at any point within a single trading day?"""
     sub = df[df["expiration_date"] == expiry].copy()
@@ -107,9 +106,11 @@ def intraday_oi_stability(df: pd.DataFrame, expiry: date, label: str) -> None:
         FROM lagged
     """).df()
     print(f"\n  {label} | expiry={expiry}")
-    print(f"  Snapshots: {result['n_snapshots'].iloc[0]}  "
-          f"Contracts: {result['total_contracts'].iloc[0]}  "
-          f"OI changes detected: {result['n_oi_changed'].iloc[0]}")
+    print(
+        f"  Snapshots: {result['n_snapshots'].iloc[0]}  "
+        f"Contracts: {result['total_contracts'].iloc[0]}  "
+        f"OI changes detected: {result['n_oi_changed'].iloc[0]}"
+    )
 
 
 def day_boundary_comparison(
@@ -156,12 +157,18 @@ def day_boundary_comparison(
     near_atm = merged[merged["strike"].between(atm * 0.97, atm * 1.03)].copy()
     near_atm = near_atm.sort_values("abs_delta", ascending=False)
 
-    return near_atm[[
-        "symbol", "strike", "contract_type",
-        f"sampled_at_et_{day_n}", f"open_interest_{day_n}",
-        f"sampled_at_et_{day_n1}", f"open_interest_{day_n1}",
-        "oi_delta",
-    ]]
+    return near_atm[
+        [
+            "symbol",
+            "strike",
+            "contract_type",
+            f"sampled_at_et_{day_n}",
+            f"open_interest_{day_n}",
+            f"sampled_at_et_{day_n1}",
+            f"open_interest_{day_n1}",
+            "oi_delta",
+        ]
+    ]
 
 
 def intraday_first_snapshot_vs_last(df: pd.DataFrame, expiry: date) -> None:
@@ -175,8 +182,12 @@ def intraday_first_snapshot_vs_last(df: pd.DataFrame, expiry: date) -> None:
 
     first_t = sub["sampled_at"].min()
     last_t = sub["sampled_at"].max()
-    first = sub[sub["sampled_at"] == first_t][["symbol", "strike", "contract_type", "open_interest"]].rename(columns={"open_interest": "oi_first"})
-    last = sub[sub["sampled_at"] == last_t][["symbol", "strike", "contract_type", "open_interest"]].rename(columns={"open_interest": "oi_last"})
+    first = sub[sub["sampled_at"] == first_t][
+        ["symbol", "strike", "contract_type", "open_interest"]
+    ].rename(columns={"open_interest": "oi_first"})
+    last = sub[sub["sampled_at"] == last_t][
+        ["symbol", "strike", "contract_type", "open_interest"]
+    ].rename(columns={"open_interest": "oi_last"})
 
     merged = first.merge(last, on=["symbol", "strike", "contract_type"])
     merged["delta"] = merged["oi_last"] - merged["oi_first"]
@@ -196,12 +207,7 @@ def scan_intraday_oi_changes(df: pd.DataFrame, expiry: date, top_n: int = 5) -> 
     atm = sub["underlying_price"].median()
     near_atm = sub[sub["strike"].between(atm * 0.97, atm * 1.03)]
 
-    top_syms = (
-        near_atm.groupby("symbol")["open_interest"]
-        .max()
-        .nlargest(top_n)
-        .index.tolist()
-    )
+    top_syms = near_atm.groupby("symbol")["open_interest"].max().nlargest(top_n).index.tolist()
 
     conn = duckdb.connect(":memory:")
     conn.register("sub", sub[sub["symbol"].isin(top_syms)])
@@ -226,10 +232,11 @@ def scan_intraday_oi_changes(df: pd.DataFrame, expiry: date, top_n: int = 5) -> 
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     s3 = s3_client()
     parquets = list_spxw_parquets(s3)
-    by_date = {d: k for d, k in parquets}
+    by_date = dict(parquets)
     sorted_dates = sorted(by_date.keys())
 
     print(f"Available SPXW schwab parquets: {len(sorted_dates)}")
@@ -239,8 +246,7 @@ def main() -> None:
     # Target expirations that are a few days out (high gamma, active OI)
     # We'll auto-pick pairs where both days exist
     consecutive_pairs = [
-        (sorted_dates[i], sorted_dates[i + 1])
-        for i in range(len(sorted_dates) - 1)
+        (sorted_dates[i], sorted_dates[i + 1]) for i in range(len(sorted_dates) - 1)
     ]
 
     # Pick pairs spread across range
@@ -263,7 +269,7 @@ def main() -> None:
                     study_cases.append((day_n, day_n1, date.fromisoformat(exp)))
                     break
 
-    print(f"\nStudy cases (day_N, day_N+1, expiry):")
+    print("\nStudy cases (day_N, day_N+1, expiry):")
     for c in study_cases:
         print(f"  {c}")
 
@@ -273,11 +279,11 @@ def main() -> None:
     print("\n" + "=" * 72)
     print("ANALYSIS 1: Is OI static throughout a single trading day?")
     print("=" * 72)
-    for day_n, day_n1, expiry in study_cases:
+    for day_n, _day_n1, expiry in study_cases:
         df_n = load_parquet(s3, by_date[day_n])
         intraday_oi_stability(df_n, expiry, f"Day={day_n}")
         intraday_first_snapshot_vs_last(df_n, expiry)
-        print(f"  Top near-ATM intraday OI change events:")
+        print("  Top near-ATM intraday OI change events:")
         scan_intraday_oi_changes(df_n, expiry)
 
     # -----------------------------------------------------------------------
@@ -288,17 +294,17 @@ def main() -> None:
     print("=" * 72)
     for day_n, day_n1, expiry in study_cases:
         print(f"\n  Day N={day_n} → Day N+1={day_n1} | expiry={expiry}")
-        diff = day_boundary_comparison(
-            s3, by_date[day_n], by_date[day_n1], day_n, day_n1, expiry
-        )
+        diff = day_boundary_comparison(s3, by_date[day_n], by_date[day_n1], day_n, day_n1, expiry)
         if diff.empty:
             print("  [no overlapping near-ATM contracts]")
         else:
             changed = diff[diff["oi_delta"] != 0]
             unchanged = diff[diff["oi_delta"] == 0]
-            print(f"  Near-ATM contracts: {len(diff)}  Changed: {len(changed)}  Unchanged: {len(unchanged)}")
+            print(
+                f"  Near-ATM contracts: {len(diff)}  Changed: {len(changed)}  Unchanged: {len(unchanged)}"
+            )
             if not changed.empty:
-                print(f"\n  Top movers (by abs OI delta):")
+                print("\n  Top movers (by abs OI delta):")
                 print(changed.head(10).to_string(index=False))
             else:
                 print("  OI identical across day boundary for all near-ATM contracts.")
@@ -327,12 +333,14 @@ def main() -> None:
         baseline = sub_n[sub_n["sampled_at"] == last_t]
         atm = baseline["underlying_price"].median()
         baseline_near = baseline[baseline["strike"].between(atm * 0.97, atm * 1.03)]
-        top_syms = (
-            baseline_near.groupby("symbol")["open_interest"].max().nlargest(8).index.tolist()
-        )
-        baseline_oi = baseline_near[baseline_near["symbol"].isin(top_syms)].set_index("symbol")["open_interest"]
+        top_syms = baseline_near.groupby("symbol")["open_interest"].max().nlargest(8).index.tolist()
+        baseline_oi = baseline_near[baseline_near["symbol"].isin(top_syms)].set_index("symbol")[
+            "open_interest"
+        ]
 
-        print(f"\n  Day N={day_n} last snap: {baseline[baseline['symbol'].isin(top_syms)]['sampled_at_et'].iloc[0]}")
+        print(
+            f"\n  Day N={day_n} last snap: {baseline[baseline['symbol'].isin(top_syms)]['sampled_at_et'].iloc[0]}"
+        )
         print(f"  Baseline OI for top {len(top_syms)} near-ATM contracts:")
         print(f"  {baseline_oi.to_dict()}")
 
@@ -341,7 +349,9 @@ def main() -> None:
 
         first_change_snap = None
         for t in snap_times:
-            snap = sub_n1[(sub_n1["sampled_at"] == t) & (sub_n1["symbol"].isin(top_syms))].set_index("symbol")["open_interest"]
+            snap = sub_n1[
+                (sub_n1["sampled_at"] == t) & (sub_n1["symbol"].isin(top_syms))
+            ].set_index("symbol")["open_interest"]
             diffs = (snap - baseline_oi).dropna()
             if (diffs != 0).any():
                 first_change_snap = t
@@ -351,7 +361,7 @@ def main() -> None:
                 break
 
         if first_change_snap is None:
-            print(f"  OI unchanged across ALL snapshots on day N+1 for these contracts.")
+            print("  OI unchanged across ALL snapshots on day N+1 for these contracts.")
 
 
 if __name__ == "__main__":
