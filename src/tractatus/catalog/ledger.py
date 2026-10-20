@@ -5,6 +5,8 @@ PostgreSQL when the database URL starts with ``postgresql://``.
 
 Status flow: discovered → committed | error
 """
+# NOTE: If you drop and recreate the ledger, repopulate with:
+#   tractatus catalog sync-ledger --table options
 
 from __future__ import annotations
 
@@ -15,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+
+from tractatus.catalog.validate.options import QualityReport
 
 
 @dataclass
@@ -38,6 +42,9 @@ class FileRecord:
     cached_at: str | None
     last_accessed_at: str | None
     updated_at: str
+    rows_total: int | None
+    rows_degraded: int | None
+    quality_flags: str | None
 
 
 _CREATE_TABLE = """\
@@ -59,6 +66,9 @@ CREATE TABLE IF NOT EXISTS catalog_files (
     cached_at        TEXT,
     last_accessed_at TEXT,
     updated_at       TEXT NOT NULL,
+    rows_total       INTEGER,
+    rows_degraded    INTEGER,
+    quality_flags    TEXT,
     PRIMARY KEY (path, table_name)
 )
 """
@@ -68,7 +78,8 @@ _CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_catalog_files_status ON catalog_
 _COLUMNS = (
     "path, table_name, sha256, size_bytes, provider, root, sample_date, "
     "file_format, s3_key, status, error, discovered_at, committed_at, "
-    "cache_key, cached_at, last_accessed_at, updated_at"
+    "cache_key, cached_at, last_accessed_at, updated_at, "
+    "rows_total, rows_degraded, quality_flags"
 )
 
 
@@ -182,25 +193,40 @@ class Ledger:
             ),
         )
 
-    def mark_committed(self, paths: list[str], table_name: str) -> None:
-        """Batch-transition files to committed status."""
+    def mark_committed(
+        self,
+        paths: list[str],
+        table_name: str,
+        quality: QualityReport | None = None,
+    ) -> None:
+        """Batch-transition files to committed status.
+
+        Pass a ``QualityReport`` to record per-file quality stats. When
+        processing one file per call (the normal publisher loop), ``paths``
+        will contain a single entry and the report applies to that file.
+        """
         if not paths:
             return
         now = self._now()
+        rows_total = quality.rows_total if quality else None
+        rows_degraded = quality.rows_degraded if quality else None
+        flags = ",".join(sorted(quality.flags_seen)) if quality and quality.flags_seen else None
         if self._is_pg:
             self._execute(
                 "UPDATE catalog_files SET status = 'committed', committed_at = %s, "
-                "error = NULL, updated_at = %s "
+                "error = NULL, updated_at = %s, "
+                "rows_total = %s, rows_degraded = %s, quality_flags = %s "
                 "WHERE path = ANY(%s) AND table_name = %s",
-                (now, now, paths, table_name),
+                (now, now, rows_total, rows_degraded, flags, paths, table_name),
             )
         else:
             placeholders = ",".join("?" for _ in paths)
             self._conn.execute(
                 f"UPDATE catalog_files SET status = 'committed', committed_at = ?, "
-                f"error = NULL, updated_at = ? "
+                f"error = NULL, updated_at = ?, "
+                f"rows_total = ?, rows_degraded = ?, quality_flags = ? "
                 f"WHERE path IN ({placeholders}) AND table_name = ?",
-                [now, now, *paths, table_name],
+                [now, now, rows_total, rows_degraded, flags, *paths, table_name],
             )
             self._conn.commit()
 
@@ -375,6 +401,26 @@ class Ledger:
 
         rows = self._fetchall(f"SELECT s3_key FROM catalog_files {where}", tuple(params))
         return [row[0] for row in rows]
+
+    def quality_summary(
+        self,
+        table_name: str | None = None,
+        provider: str | None = None,
+    ) -> list[FileRecord]:
+        """Return committed files that have at least one degraded row."""
+        where = "WHERE status = 'committed' AND rows_degraded > 0"
+        params: list[Any] = []
+        if table_name:
+            where += " AND table_name = %s"
+            params.append(table_name)
+        if provider:
+            where += " AND provider = %s"
+            params.append(provider)
+        rows = self._fetchall(
+            f"SELECT {_COLUMNS} FROM catalog_files {where} ORDER BY sample_date DESC",
+            tuple(params),
+        )
+        return [FileRecord(*row) for row in rows]
 
     def _query_status(
         self,

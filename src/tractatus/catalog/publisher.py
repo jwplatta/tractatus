@@ -23,6 +23,7 @@ from tractatus.catalog.file_store import FileStore, LocalFileStore, S3FileStore
 from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_raw, normalize_table
 from tractatus.catalog.schemas import TABLE_DEFS
+from tractatus.catalog.validate import QualityReport, validate_options
 
 logger = logging.getLogger("tractatus.catalog")
 
@@ -258,11 +259,27 @@ class Publisher:
                         }
                     )
 
+                # Validate options samples and annotate with quality columns
+                quality: QualityReport | None = None
+                if table_name == "options":
+                    normalized, quality = validate_options(normalized)
+                    if quality.rows_degraded:
+                        logger.warning(
+                            {
+                                "event": "sample_quality_degraded",
+                                "table": table_name,
+                                "path": record.path,
+                                "rows_total": quality.rows_total,
+                                "rows_degraded": quality.rows_degraded,
+                                "flags": sorted(quality.flags_seen),
+                            }
+                        )
+
                 # Pre-sort before Iceberg append (PyIceberg doesn't sort)
                 normalized = _sort_table(normalized, table_def.sort_keys)
 
                 iceberg_table.append(normalized)
-                self._ledger.mark_committed([record.path], table_name)
+                self._ledger.mark_committed([record.path], table_name, quality=quality)
                 committed += 1
 
                 # Read parquet bytes added from the Iceberg snapshot summary.

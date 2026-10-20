@@ -65,6 +65,8 @@ OPTIONS_TABLE = TableDef(
         NestedField(field_id=39, name="expiration_type", field_type=StringType(), required=False),
         NestedField(field_id=40, name="multiplier", field_type=DoubleType(), required=False),
         NestedField(field_id=41, name="non_standard", field_type=BooleanType(), required=False),
+        NestedField(field_id=42, name="sample_quality", field_type=StringType(), required=False),
+        NestedField(field_id=43, name="quality_flags", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
