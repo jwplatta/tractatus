@@ -106,20 +106,36 @@ def _parse_futures_ndjson(key: str) -> ParseResult:
 
 
 def _parse_candles(key: str) -> ParseResult:
-    """Candles CSV: provider/frequency/SYMBOL.csv"""
+    """Candles CSV — two layouts supported:
+
+    New (date-partitioned):
+        provider/YYYY/MM/DD/frequency/SYMBOL.csv
+    Legacy (cumulative):
+        provider/frequency/SYMBOL.csv  (epoch date used as placeholder)
+    """
     p = PurePosixPath(key)
     if p.suffix != ".csv":
         return None
     parts = p.parts
-    # provider / frequency / SYMBOL.csv
-    if len(parts) < 3:
-        return None
-    provider = parts[0]
-    frequency = parts[1]
-    symbol = p.stem
-    # Candles don't have a date directory — use epoch as placeholder
-    sample_date = date(1970, 1, 1)
-    return provider, symbol, sample_date, {"frequency": frequency}
+    # New layout: provider / YYYY / MM / DD / frequency / SYMBOL.csv  (6 parts)
+    if len(parts) >= 6:
+        provider = parts[0]
+        date_dir = "/".join(parts[1:4])
+        if _DATE_DIR_PATTERN.match(date_dir):
+            try:
+                sample_date = date(int(parts[1]), int(parts[2]), int(parts[3]))
+            except ValueError:
+                return None
+            frequency = parts[4]
+            symbol = p.stem
+            return provider, symbol, sample_date, {"frequency": frequency}
+    # Legacy layout: provider / frequency / SYMBOL.csv  (3 parts)
+    if len(parts) >= 3:
+        provider = parts[0]
+        frequency = parts[1]
+        symbol = p.stem
+        return provider, symbol, date(1970, 1, 1), {"frequency": frequency}
+    return None
 
 
 def _parse_fundamentals(key: str) -> ParseResult:
