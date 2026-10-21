@@ -106,19 +106,24 @@ def _parse_futures_ndjson(key: str) -> ParseResult:
 
 
 def _parse_candles(key: str) -> ParseResult:
-    """Candles CSV: provider/frequency/SYMBOL.csv"""
+    """Candles CSV: provider/YYYY/MM/DD/frequency/SYMBOL.csv"""
     p = PurePosixPath(key)
     if p.suffix != ".csv":
         return None
     parts = p.parts
-    # provider / frequency / SYMBOL.csv
-    if len(parts) < 3:
+    # provider / YYYY / MM / DD / frequency / SYMBOL.csv
+    if len(parts) < 6:
         return None
     provider = parts[0]
-    frequency = parts[1]
+    date_dir = "/".join(parts[1:4])
+    if not _DATE_DIR_PATTERN.match(date_dir):
+        return None
+    try:
+        sample_date = date(int(parts[1]), int(parts[2]), int(parts[3]))
+    except ValueError:
+        return None
+    frequency = parts[4]
     symbol = p.stem
-    # Candles don't have a date directory — use epoch as placeholder
-    sample_date = date(1970, 1, 1)
     return provider, symbol, sample_date, {"frequency": frequency}
 
 

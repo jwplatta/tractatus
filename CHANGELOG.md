@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ### Added
 
+- Candles discovery supports date-partitioned staging layout `candles/<provider>/<YYYY>/<MM>/<DD>/<frequency>/<symbol>.csv`. Legacy cumulative layout (`candles/<provider>/<frequency>/<symbol>.csv`) remains supported alongside the new format. Date filtering (`--after` / `--before`) now works for candles when using the date-partitioned layout.
+
+### Changed
+
+- `_metadata_from_path` in the publisher extracts `sample_date`, `symbol`, and `interval` from the new candles path layout, enabling correct ledger records for date-partitioned candle files.
+
+
+
 - `tractatus.catalog.validate` module for options sample quality validation.
   - `validate_options()` runs a chain of validators after normalization and before Iceberg append, annotating each row with `sample_quality` (`"degraded"` or null) and `quality_flags` (comma-joined detail flags).
   - `detect_greek_sentinels`: nulls Schwab sentinel value -999.0 in delta, gamma, theta, vega, rho, and volatility; sets flag `greeks_sentinel`.

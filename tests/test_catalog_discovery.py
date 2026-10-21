@@ -114,9 +114,20 @@ def _create_ndjson(base: Path, table: str, provider: str, d: date, symbol: str) 
     return path
 
 
-def _create_candles_csv(base: Path, provider: str, frequency: str, symbol: str) -> Path:
-    """Create a minimal candles CSV file."""
-    path = base / "candles" / provider / frequency / f"{symbol}.csv"
+def _create_candles_csv_dated(
+    base: Path, provider: str, d: date, frequency: str, symbol: str
+) -> Path:
+    """Create a minimal candles CSV file (date-partitioned layout)."""
+    path = (
+        base
+        / "candles"
+        / provider
+        / f"{d:%Y}"
+        / f"{d:%m}"
+        / f"{d:%d}"
+        / frequency
+        / f"{symbol}.csv"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("datetime,open,high,low,close,volume\n2026-10-18T14:30:00Z,1,2,3,4,100\n")
     return path
@@ -168,17 +179,44 @@ def test_discover_level_one_futures(tmp_path: Path) -> None:
 
 
 def test_discover_candles(tmp_path: Path) -> None:
-    _create_candles_csv(tmp_path, "schwab", "5min", "SPX")
-    _create_candles_csv(tmp_path, "schwab", "day", "SPX")
+    d = date(2026, 10, 18)
+    _create_candles_csv_dated(tmp_path, "schwab", d, "5min", "SPX")
+    _create_candles_csv_dated(tmp_path, "schwab", d, "5min", "AAPL")
 
     store = LocalFileStore(tmp_path)
     files = discover_files(store, table_name="candles")
     assert len(files) == 2
     assert all(f.provider == "schwab" for f in files)
-    assert {f.root for f in files} == {"SPX"}
+    assert {f.root for f in files} == {"SPX", "AAPL"}
+    assert all(f.sample_date == d for f in files)
+    assert all(f.metadata.get("frequency") == "5min" for f in files)
     assert all(f.file_format == "csv" for f in files)
-    frequencies = {f.metadata.get("frequency") for f in files}
-    assert frequencies == {"5min", "day"}
+
+
+def test_discover_candles_dated_relative_path(tmp_path: Path) -> None:
+    d = date(2026, 10, 18)
+    _create_candles_csv_dated(tmp_path, "schwab", d, "5min", "SPX")
+
+    store = LocalFileStore(tmp_path)
+    files = discover_files(store, table_name="candles")
+    assert len(files) == 1
+    assert files[0].relative_path == "schwab/2026/10/18/5min/SPX.csv"
+
+
+def test_discover_candles_dated_date_filter(tmp_path: Path) -> None:
+    _create_candles_csv_dated(tmp_path, "schwab", date(2026, 10, 17), "5min", "SPX")
+    _create_candles_csv_dated(tmp_path, "schwab", date(2026, 10, 18), "5min", "SPX")
+    _create_candles_csv_dated(tmp_path, "schwab", date(2026, 10, 19), "5min", "SPX")
+
+    store = LocalFileStore(tmp_path)
+    files = discover_files(
+        store,
+        table_name="candles",
+        after=date(2026, 10, 18),
+        before=date(2026, 10, 19),
+    )
+    assert len(files) == 1
+    assert files[0].sample_date == date(2026, 10, 18)
 
 
 def test_discover_fundamentals(tmp_path: Path) -> None:
