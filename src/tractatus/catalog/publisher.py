@@ -51,18 +51,14 @@ def _metadata_from_path(
         return None, None, None
 
     if table_name == "candles":
-        # New layout: provider/YYYY/MM/DD/frequency/SYMBOL.csv (6+ parts)
-        if len(parts) >= 6 and _DATE_DIR_RE.search("/".join(parts[1:4])):
-            interval = parts[4]
-            symbol = PurePosixPath(parts[-1]).stem
+        # provider/YYYY/MM/DD/frequency/SYMBOL.csv
+        if len(parts) >= 6:
             m = _DATE_DIR_RE.search(relative_path)
-            sample_dt = date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
-            return sample_dt, symbol, interval
-        # Legacy layout: provider/frequency/SYMBOL.csv (3+ parts)
-        if len(parts) >= 3:
-            interval = parts[1]
-            symbol = PurePosixPath(parts[-1]).stem
-            return None, symbol, interval
+            if m:
+                sample_dt = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                interval = parts[4]
+                symbol = PurePosixPath(parts[-1]).stem
+                return sample_dt, symbol, interval
         return None, None, None
 
     return None, None, None

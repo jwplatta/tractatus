@@ -114,14 +114,6 @@ def _create_ndjson(base: Path, table: str, provider: str, d: date, symbol: str) 
     return path
 
 
-def _create_candles_csv(base: Path, provider: str, frequency: str, symbol: str) -> Path:
-    """Create a minimal candles CSV file (legacy layout)."""
-    path = base / "candles" / provider / frequency / f"{symbol}.csv"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("datetime,open,high,low,close,volume\n2026-10-18T14:30:00Z,1,2,3,4,100\n")
-    return path
-
-
 def _create_candles_csv_dated(
     base: Path, provider: str, d: date, frequency: str, symbol: str
 ) -> Path:
@@ -186,23 +178,7 @@ def test_discover_level_one_futures(tmp_path: Path) -> None:
     assert all(f.sample_date == date(2026, 10, 15) for f in files)
 
 
-def test_discover_candles_legacy(tmp_path: Path) -> None:
-    _create_candles_csv(tmp_path, "schwab", "5min", "SPX")
-    _create_candles_csv(tmp_path, "schwab", "day", "SPX")
-
-    store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="candles")
-    assert len(files) == 2
-    assert all(f.provider == "schwab" for f in files)
-    assert {f.root for f in files} == {"SPX"}
-    assert all(f.file_format == "csv" for f in files)
-    frequencies = {f.metadata.get("frequency") for f in files}
-    assert frequencies == {"5min", "day"}
-    # Legacy layout has no date — epoch placeholder
-    assert all(f.sample_date.year == 1970 for f in files)
-
-
-def test_discover_candles_dated(tmp_path: Path) -> None:
+def test_discover_candles(tmp_path: Path) -> None:
     d = date(2026, 10, 18)
     _create_candles_csv_dated(tmp_path, "schwab", d, "5min", "SPX")
     _create_candles_csv_dated(tmp_path, "schwab", d, "5min", "AAPL")
@@ -241,18 +217,6 @@ def test_discover_candles_dated_date_filter(tmp_path: Path) -> None:
     )
     assert len(files) == 1
     assert files[0].sample_date == date(2026, 10, 18)
-
-
-def test_discover_candles_mixed_layouts(tmp_path: Path) -> None:
-    """Legacy and date-partitioned files can coexist; both are discovered."""
-    _create_candles_csv(tmp_path, "schwab", "5min", "SPX")
-    _create_candles_csv_dated(tmp_path, "schwab", date(2026, 10, 18), "5min", "AAPL")
-
-    store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="candles")
-    assert len(files) == 2
-    roots = {f.root for f in files}
-    assert roots == {"SPX", "AAPL"}
 
 
 def test_discover_fundamentals(tmp_path: Path) -> None:

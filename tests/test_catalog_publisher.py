@@ -306,11 +306,11 @@ def test_metadata_from_path_level_one() -> None:
 
 
 def test_metadata_from_path_candles() -> None:
-    # _metadata_from_path expects len(parts) >= 4 for candles
-    path = "schwab/daily/subdir/AAPL.csv"
+    path = "schwab/2026/10/18/5min/AAPL.csv"
     sample_dt, symbol, interval = _metadata_from_path(path, "candles")
     assert symbol == "AAPL"
-    assert interval == "daily"
+    assert interval == "5min"
+    assert sample_dt == date(2026, 10, 18)
 
 
 def test_metadata_from_path_options() -> None:
