@@ -8,13 +8,18 @@ Sentinel constants are Schwab-specific; define them here so they are easy to upd
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.compute as pc
 
 logger = logging.getLogger("tractatus.catalog")
+
+_REJECTED_LOG: Path = Path.home() / ".tractatus" / "rejected_options.ndjson"
 
 # ---------------------------------------------------------------------------
 # Schwab sentinel constants
@@ -139,12 +144,28 @@ _VALIDATORS: list[tuple[str, object]] = [
 ]
 
 
-def validate_options(table: pa.Table) -> tuple[pa.Table, QualityReport]:
+def _write_rejected(rows: list[dict], context: dict | None) -> None:
+    """Append dropped rows to ~/.tractatus/rejected_options.ndjson."""
+    _REJECTED_LOG.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(tz=UTC).isoformat()
+    with _REJECTED_LOG.open("a") as fh:
+        for row in rows:
+            record = {"rejected_at": ts, **(context or {}), **row}
+            fh.write(json.dumps(record, default=str) + "\n")
+
+
+def validate_options(
+    table: pa.Table,
+    context: dict | None = None,
+) -> tuple[pa.Table, QualityReport]:
     """Run all validators and append sample_quality / quality_flags columns.
 
     Returns the annotated table and a QualityReport with aggregate stats.
     ``sample_quality`` is NULL for clean rows, ``"degraded"`` otherwise.
     ``quality_flags`` is NULL for clean rows, comma-joined flag names otherwise.
+
+    ``context`` is an optional dict (e.g. provider, root, sample_date) appended
+    to each rejected-row record written to ``~/.tractatus/rejected_options.ndjson``.
     """
     # Drop rows missing required fields before any other validation.
     table, dropped, dropped_rows = reject_missing_required(table)
@@ -153,9 +174,10 @@ def validate_options(table: pa.Table) -> tuple[pa.Table, QualityReport]:
             {
                 "event": "options_required_fields_missing",
                 "rows_dropped": dropped,
-                "sample": dropped_rows[:20],
+                **(context or {}),
             }
         )
+        _write_rejected(dropped_rows, context)
 
     n = table.num_rows
     # per-row accumulated flags: list[set[str]]

@@ -277,7 +277,14 @@ class Publisher:
                 # Validate once for the whole group
                 quality: QualityReport | None = None
                 if table_name == "options":
-                    normalized, quality = validate_options(normalized)
+                    normalized, quality = validate_options(
+                        normalized,
+                        context={
+                            "provider": provider,
+                            "root": root,
+                            "sample_date": sample_date_str,
+                        },
+                    )
                     if quality.rows_degraded:
                         logger.warning(
                             {
