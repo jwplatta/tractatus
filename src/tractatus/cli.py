@@ -14,7 +14,6 @@ from typing import Annotated
 
 import boto3
 import typer
-from dotenv import load_dotenv
 from pyiceberg.catalog import load_catalog
 from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import AlwaysTrue
@@ -24,8 +23,6 @@ from tractatus.catalog.discovery import _parse_options
 from tractatus.config import TractatusConfig, config_template, default_config_path
 from tractatus.logging import setup_logging
 from tractatus.reader import DataReader
-
-load_dotenv()
 
 app = typer.Typer(no_args_is_help=True, help="Tractatus research tools.")
 init_app = typer.Typer(no_args_is_help=True, help="Create a research project.")

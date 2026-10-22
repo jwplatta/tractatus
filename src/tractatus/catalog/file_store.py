@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Protocol
 
 import boto3
-from botocore.config import Config
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -119,7 +118,6 @@ class S3FileStore:
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=region,
-            config=Config(signature_version="s3v4"),
         )
 
     def list_files(
