@@ -180,9 +180,13 @@ class Publisher:
         before: date | None = None,
     ) -> int:
         """Scan the file store for data files and record them in the ledger."""
+        discover_start = time.monotonic()
         files = discover_files(
             self._store, table_name=table_name, providers=providers, after=after, before=before
         )
+        discover_ms = int((time.monotonic() - discover_start) * 1000)
+
+        ledger_start = time.monotonic()
         for f in files:
             self._ledger.record_discovered(
                 path=f.relative_path,
@@ -194,12 +198,16 @@ class Publisher:
                 sample_date=f.sample_date.isoformat(),
                 file_format=f.file_format,
             )
+        ledger_ms = int((time.monotonic() - ledger_start) * 1000)
+
         logger.info(
             {
                 "event": "discovery_completed",
                 "table": table_name,
                 "file_count": len(files),
                 "total_bytes": sum(f.size_bytes for f in files),
+                "discover_ms": discover_ms,
+                "ledger_ms": ledger_ms,
             }
         )
         return len(files)
@@ -214,8 +222,6 @@ class Publisher:
     ) -> tuple[int, int, int]:
         """Normalize and append pending files to Iceberg. Returns (committed, cached, errors)."""
         pending = self._ledger.pending(table_name, after=after, before=before, providers=providers)
-        if limit is not None:
-            pending = pending[:limit]
         if not pending:
             return 0, 0, 0
 
@@ -236,7 +242,11 @@ class Publisher:
         for record in pending:
             groups[(record.provider, record.root, record.sample_date)].append(record)
 
-        for (provider, root, sample_date_str), group_records in groups.items():
+        group_items = list(groups.items())
+        if limit is not None:
+            group_items = group_items[:limit]
+
+        for (provider, root, sample_date_str), group_records in group_items:
             paths = [r.path for r in group_records]
             try:
                 sample_dt = (
