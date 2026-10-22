@@ -116,12 +116,17 @@ class Publisher:
         self,
         table_name: str,
         dry_run: bool = False,
+        skip_discover: bool = False,
         providers: list[str] | None = None,
         limit: int | None = None,
         after: date | None = None,
         before: date | None = None,
     ) -> PublishResult:
-        """Execute the full discover → normalize → append pipeline for a table."""
+        """Execute the discover → normalize → append pipeline for a table.
+
+        Pass ``skip_discover=True`` to skip the MinIO scan and only process
+        files already recorded in the ledger as ``discovered``.
+        """
         if table_name not in TABLE_DEFS:
             raise ValueError(
                 f"Unknown table {table_name!r}. Registered tables: {', '.join(sorted(TABLE_DEFS))}"
@@ -142,7 +147,8 @@ class Publisher:
             }
         )
 
-        result.discovered = self._discover(table_name, providers, after=after, before=before)
+        if not skip_discover:
+            result.discovered = self._discover(table_name, providers, after=after, before=before)
         if dry_run:
             result.details.append("Dry run — skipping append.")
             return result

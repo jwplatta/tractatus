@@ -205,15 +205,10 @@ def verify() -> None:
 @catalog_app.command("publish")
 def catalog_publish(
     table: Annotated[str, typer.Option("--table", help="Iceberg table to publish.")] = "options",
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Discover only, skip upload and commit.")
-    ] = False,
     provider: Annotated[
         list[str] | None, typer.Option("--provider", help="Limit to specific providers.")
     ] = None,
-    limit: Annotated[
-        int | None, typer.Option("--limit", help="Max files to upload and commit.")
-    ] = None,
+    limit: Annotated[int | None, typer.Option("--limit", help="Max groups to commit.")] = None,
     after: Annotated[
         str | None, typer.Option("--after", help="Only include sample_date >= DATE (YYYY-MM-DD).")
     ] = None,
@@ -221,7 +216,11 @@ def catalog_publish(
         str | None, typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD).")
     ] = None,
 ) -> None:
-    """Discover, upload, and commit parquet files to an Iceberg table."""
+    """Normalize and commit discovered files to an Iceberg table.
+
+    Run ``tractatus catalog discover`` first to scan MinIO and populate the ledger.
+    This command only processes files already recorded as ``discovered`` in the ledger.
+    """
     setup_logging("catalog", verbose=True)
 
     parsed_after = date.fromisoformat(after) if after else None
@@ -232,7 +231,7 @@ def catalog_publish(
     try:
         result = publisher.run(
             table_name=table,
-            dry_run=dry_run,
+            skip_discover=True,
             providers=provider,
             limit=limit,
             after=parsed_after,
@@ -242,7 +241,6 @@ def catalog_publish(
         publisher.close()
 
     typer.echo(f"Table:      {table}")
-    typer.echo(f"Discovered: {result.discovered}")
     typer.echo(f"Committed:  {result.committed}")
     typer.echo(f"Cached:     {result.cached}")
     typer.echo(f"Errors:     {result.errors}")
@@ -263,7 +261,11 @@ def catalog_discover(
         str | None, typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD).")
     ] = None,
 ) -> None:
-    """Discover parquet files and add them to the ledger without uploading or committing."""
+    """Scan MinIO for data files and record them in the ledger.
+
+    Run this once per date range before ``tractatus catalog publish``.
+    Already-known files are skipped (upsert by path).
+    """
     setup_logging("catalog", verbose=True)
 
     parsed_after = date.fromisoformat(after) if after else None
@@ -272,9 +274,8 @@ def catalog_discover(
     config = CatalogConfig.load()
     publisher = Publisher(config)
     try:
-        result = publisher.run(
+        discovered = publisher._discover(
             table_name=table,
-            dry_run=True,
             providers=provider,
             after=parsed_after,
             before=parsed_before,
@@ -283,7 +284,7 @@ def catalog_discover(
         publisher.close()
 
     typer.echo(f"Table:      {table}")
-    typer.echo(f"Discovered: {result.discovered}")
+    typer.echo(f"Discovered: {discovered}")
 
 
 @catalog_app.command("status")
