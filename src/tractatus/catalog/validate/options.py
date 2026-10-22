@@ -8,18 +8,15 @@ Sentinel constants are Schwab-specific; define them here so they are easy to upd
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.compute as pc
 
-logger = logging.getLogger("tractatus.catalog")
+from tractatus.catalog.validate.common import write_rejected
 
-_REJECTED_LOG: Path = Path.home() / ".tractatus" / "rejected_options.ndjson"
+logger = logging.getLogger("tractatus.catalog")
 
 # ---------------------------------------------------------------------------
 # Schwab sentinel constants
@@ -144,16 +141,6 @@ _VALIDATORS: list[tuple[str, object]] = [
 ]
 
 
-def _write_rejected(rows: list[dict], context: dict | None) -> None:
-    """Append dropped rows to ~/.tractatus/rejected_options.ndjson."""
-    _REJECTED_LOG.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(tz=UTC).isoformat()
-    with _REJECTED_LOG.open("a") as fh:
-        for row in rows:
-            record = {"rejected_at": ts, **(context or {}), **row}
-            fh.write(json.dumps(record, default=str) + "\n")
-
-
 def validate_options(
     table: pa.Table,
     context: dict | None = None,
@@ -177,7 +164,7 @@ def validate_options(
                 **(context or {}),
             }
         )
-        _write_rejected(dropped_rows, context)
+        write_rejected(dropped_rows, "options", context)
 
     n = table.num_rows
     # per-row accumulated flags: list[set[str]]
