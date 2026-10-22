@@ -90,7 +90,7 @@ def normalize_order_book(
     diagnostics.extend(strip_diags)
 
     # Validate input matches tickrake's producer contract
-    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    table, val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
     # Parse JSON columns into nested structs

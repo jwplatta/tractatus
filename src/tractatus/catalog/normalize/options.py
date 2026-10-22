@@ -74,7 +74,7 @@ def normalize_options(table: pa.Table) -> tuple[pa.Table, list[str]]:
     source_names = set(table.column_names)
 
     # Validate input matches tickrake's producer contract
-    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    table, val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
     # Cast expiration_date from string to date32

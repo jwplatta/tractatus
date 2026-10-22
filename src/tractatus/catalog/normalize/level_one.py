@@ -168,7 +168,7 @@ def normalize_level_one_equities(
     diagnostics.extend(strip_diags)
 
     # Validate input matches tickrake's producer contract
-    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    table, val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
     # Convert source string timestamp columns to timestamptz
@@ -204,7 +204,7 @@ def normalize_level_one_futures(
     diagnostics.extend(strip_diags)
 
     # Validate input matches tickrake's producer contract
-    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    table, val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
     # Convert source string timestamp columns to timestamptz

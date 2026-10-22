@@ -30,7 +30,7 @@ def normalize_economic_events(table: pa.Table) -> tuple[pa.Table, list[str]]:
     """Normalize an economic_events Arrow table to the canonical schema."""
     diagnostics: list[str] = []
 
-    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    table, val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
     # Cast timestamp string columns to timestamptz
