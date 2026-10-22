@@ -30,7 +30,7 @@ def normalize_fundamentals(table: pa.Table) -> tuple[pa.Table, list[str]]:
     diagnostics: list[str] = []
 
     # Validate input matches tickrake's producer contract
-    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    table, val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
     # Cast date string columns → date32

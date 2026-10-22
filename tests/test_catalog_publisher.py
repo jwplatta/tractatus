@@ -12,6 +12,7 @@ import pytest
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.publisher import Publisher, _metadata_from_path
 from tractatus.catalog.schemas import TABLE_DEFS
+from tractatus.catalog.validate import QualityReport
 
 
 def _make_config(tmp_path: Path, cache_bucket: str | None = None) -> CatalogConfig:
@@ -95,7 +96,7 @@ def test_unknown_table_raises(tmp_path: Path) -> None:
 def test_append_csv_file(
     mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
 ) -> None:
-    """CSV files should go through normalize_raw path."""
+    """CSV files should be parsed and grouped before normalizing."""
     config = _make_config(tmp_path)
     _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
 
@@ -108,15 +109,18 @@ def test_append_csv_file(
     publisher.run(table_name="options", dry_run=True)
 
     normalized = pa.table({"x": [1]})
-    with patch(
-        "tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])
-    ) as mock_norm:
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+    ):
         result = publisher.run(table_name="options")
 
     publisher.close()
 
-    mock_norm.assert_called_once()
-    assert mock_norm.call_args[0][1] == "csv"  # file_format
     mock_iceberg_table.append.assert_called_once()
     assert result.committed == 1
 
@@ -126,7 +130,7 @@ def test_append_csv_file(
 def test_append_ndjson_file(
     mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
 ) -> None:
-    """NDJSON files should go through normalize_raw path."""
+    """NDJSON files should be parsed and grouped before normalizing."""
     config = _make_config(tmp_path)
     _create_level_one_ndjson(config.data_root, "schwab", date(2026, 6, 25), "AAPL")
 
@@ -139,15 +143,11 @@ def test_append_ndjson_file(
     publisher.run(table_name="level_one_equities", dry_run=True)
 
     normalized = pa.table({"x": [1]})
-    with patch(
-        "tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])
-    ) as mock_norm:
+    with patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])):
         result = publisher.run(table_name="level_one_equities")
 
     publisher.close()
 
-    mock_norm.assert_called_once()
-    assert mock_norm.call_args[0][1] == "ndjson"
     assert result.committed == 1
 
 
@@ -167,7 +167,7 @@ def test_append_error_marks_ledger(
     publisher = Publisher(config)
     publisher.run(table_name="options", dry_run=True)
 
-    with patch("tractatus.catalog.publisher.normalize_raw", side_effect=ValueError("bad data")):
+    with patch("tractatus.catalog.publisher.normalize_table", side_effect=ValueError("bad data")):
         result = publisher.run(table_name="options")
 
     publisher.close()
@@ -194,7 +194,14 @@ def test_append_with_limit(
     publisher.run(table_name="options", dry_run=True)
 
     normalized = pa.table({"x": [1]})
-    with patch("tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])):
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+    ):
         result = publisher.run(table_name="options", limit=1)
 
     publisher.close()
@@ -217,8 +224,13 @@ def test_append_sorts_before_iceberg(mock_load_catalog: MagicMock, tmp_path: Pat
 
     # Table with a sort key column in descending order
     normalized = pa.table({"x": [3, 1, 2]})
+
     with (
-        patch("tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])),
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
         patch("tractatus.catalog.publisher._sort_table", wraps=lambda t, k: t) as mock_sort,
     ):
         publisher.run(table_name="options")
@@ -254,7 +266,13 @@ def test_cache_to_minio(
     mock_cache_client = MagicMock()
     publisher._cache_client = mock_cache_client
 
-    with patch("tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])):
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+    ):
         result = publisher.run(table_name="options")
 
     publisher.close()
@@ -286,7 +304,14 @@ def test_no_cache_without_config(
     publisher.run(table_name="options", dry_run=True)
 
     normalized = pa.table({"x": [1]})
-    with patch("tractatus.catalog.publisher.normalize_raw", return_value=(normalized, [])):
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+    ):
         result = publisher.run(table_name="options")
 
     publisher.close()

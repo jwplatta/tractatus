@@ -8,10 +8,15 @@ Sentinel constants are Schwab-specific; define them here so they are easy to upd
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import pyarrow as pa
 import pyarrow.compute as pc
+
+from tractatus.catalog.validate.common import write_rejected
+
+logger = logging.getLogger("tractatus.catalog")
 
 # ---------------------------------------------------------------------------
 # Schwab sentinel constants
@@ -22,6 +27,9 @@ THEORETICAL_SENTINEL: float = -1.0
 
 GREEK_COLUMNS: tuple[str, ...] = ("delta", "gamma", "theta", "vega", "rho", "volatility")
 OHLC_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")
+
+# Rows missing any of these fields are dropped entirely — insufficient for IV/greeks estimation.
+REQUIRED_COLUMNS: tuple[str, ...] = ("mark", "strike", "expiration_date", "contract_type")
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +102,34 @@ def detect_missing_ohlc(table: pa.Table) -> tuple[pa.Table, pa.Array]:
     return table, all_null
 
 
+def reject_missing_required(table: pa.Table) -> tuple[pa.Table, int, list[dict]]:
+    """Drop rows where any required column is null.
+
+    Returns the filtered table, the count of dropped rows, and a list of
+    dicts (one per dropped row) with the required-column values for logging.
+    """
+    present = [c for c in REQUIRED_COLUMNS if c in table.column_names]
+    keep_mask: pa.Array = pa.array([True] * table.num_rows, type=pa.bool_())
+    for col_name in present:
+        keep_mask = pc.and_(keep_mask, pc.is_valid(table.column(col_name)))
+
+    dropped_count = int(pc.sum(pc.invert(keep_mask)).as_py() or 0)
+    if dropped_count == 0:
+        return table, 0, []
+
+    dropped_indices = [i for i, keep in enumerate(keep_mask.to_pylist()) if not keep]
+    dropped_rows = []
+    for i in dropped_indices:
+        row = {}
+        for col_name in REQUIRED_COLUMNS:
+            if col_name in table.column_names:
+                row[col_name] = table.column(col_name)[i].as_py()
+        dropped_rows.append(row)
+
+    filtered = table.filter(keep_mask)
+    return filtered, dropped_count, dropped_rows
+
+
 # ---------------------------------------------------------------------------
 # Validator chain
 # ---------------------------------------------------------------------------
@@ -105,13 +141,31 @@ _VALIDATORS: list[tuple[str, object]] = [
 ]
 
 
-def validate_options(table: pa.Table) -> tuple[pa.Table, QualityReport]:
+def validate_options(
+    table: pa.Table,
+    context: dict | None = None,
+) -> tuple[pa.Table, QualityReport]:
     """Run all validators and append sample_quality / quality_flags columns.
 
     Returns the annotated table and a QualityReport with aggregate stats.
     ``sample_quality`` is NULL for clean rows, ``"degraded"`` otherwise.
     ``quality_flags`` is NULL for clean rows, comma-joined flag names otherwise.
+
+    ``context`` is an optional dict (e.g. provider, root, sample_date) appended
+    to each rejected-row record written to ``~/.tractatus/rejected_options.ndjson``.
     """
+    # Drop rows missing required fields before any other validation.
+    table, dropped, dropped_rows = reject_missing_required(table)
+    if dropped:
+        logger.warning(
+            {
+                "event": "options_required_fields_missing",
+                "rows_dropped": dropped,
+                **(context or {}),
+            }
+        )
+        write_rejected(dropped_rows, "options", context)
+
     n = table.num_rows
     # per-row accumulated flags: list[set[str]]
     row_flags: list[set[str]] = [set() for _ in range(n)]
@@ -133,12 +187,12 @@ def validate_options(table: pa.Table) -> tuple[pa.Table, QualityReport]:
             quality_vals.append(None)
             flags_vals.append(None)
 
-    table = table.append_column(
-        pa.field("sample_quality", pa.string()), pa.array(quality_vals, type=pa.string())
-    )
-    table = table.append_column(
-        pa.field("quality_flags", pa.string()), pa.array(flags_vals, type=pa.string())
-    )
+    for col_name, values in (("sample_quality", quality_vals), ("quality_flags", flags_vals)):
+        arr = pa.array(values, type=pa.string())
+        if col_name in table.column_names:
+            table = table.set_column(table.column_names.index(col_name), col_name, arr)
+        else:
+            table = table.append_column(pa.field(col_name, pa.string()), arr)
 
     rows_degraded = sum(1 for f in row_flags if f)
     flags_seen = {f for flags in row_flags for f in flags}

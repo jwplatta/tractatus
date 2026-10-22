@@ -27,6 +27,9 @@ def _types_compatible(actual: pa.DataType, expected: pa.DataType) -> bool:
     commonly infer int64 for values that are logically float), and allows
     date/timestamp variants where string is expected.
     """
+    # A fully-null column (pyarrow infers null type) is compatible with any expected type
+    if actual == pa.null():
+        return True
     if actual in _STRING_TYPES and expected in _STRING_TYPES:
         return True
     # Numeric types are castable (int64 ↔ float64)
@@ -41,11 +44,12 @@ def _types_compatible(actual: pa.DataType, expected: pa.DataType) -> bool:
 def validate_input_schema(
     table: pa.Table,
     expected: dict[str, pa.DataType],
-) -> list[str]:
+) -> tuple[pa.Table, list[str]]:
     """Validate that an input table matches the expected producer schema.
 
     Raises ``ValueError`` if required columns are missing or have incompatible
-    types. Returns diagnostic warnings for unexpected extra columns.
+    types. Fully-null columns are cast to the expected type in-place. Returns
+    the (possibly updated) table and diagnostic warnings for unexpected columns.
     """
     diagnostics: list[str] = []
     actual_schema = {f.name: f.type for f in table.schema}
@@ -55,9 +59,16 @@ def validate_input_schema(
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
-    # Check for type mismatches (string and large_string are treated as compatible)
+    # Cast fully-null columns to the expected type and check for type mismatches.
+    # pyarrow infers pa.null() when all CSV values in a column are empty; casting
+    # to the expected type produces a properly-typed all-null column downstream.
     for col_name, expected_type in expected.items():
         actual_type = actual_schema[col_name]
+        if actual_type == pa.null():
+            casted = pa.nulls(len(table), type=expected_type)
+            table = table.set_column(table.column_names.index(col_name), col_name, casted)
+            diagnostics.append(f"Cast fully-null column {col_name!r} to {expected_type}")
+            continue
         if actual_type != expected_type:
             if _types_compatible(actual_type, expected_type):
                 continue
@@ -68,7 +79,7 @@ def validate_input_schema(
     if extra:
         diagnostics.append(f"Unexpected extra columns in input: {', '.join(extra)}")
 
-    return diagnostics
+    return table, diagnostics
 
 
 def epoch_ms_to_timestamp(col: pa.Array) -> pa.Array:

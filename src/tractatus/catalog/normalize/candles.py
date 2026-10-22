@@ -34,7 +34,7 @@ def normalize_candles(
     n_rows = len(table)
 
     # Validate input matches tickrake's producer contract
-    val_diags = validate_input_schema(table, _EXPECTED_INPUT)
+    table, val_diags = validate_input_schema(table, _EXPECTED_INPUT)
     diagnostics.extend(val_diags)
 
     # Inject symbol from filename

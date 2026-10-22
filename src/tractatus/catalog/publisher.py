@@ -6,6 +6,7 @@ import io
 import logging
 import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import PurePosixPath
@@ -21,7 +22,8 @@ from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import data_dir_name, discover_files
 from tractatus.catalog.file_store import FileStore, LocalFileStore, S3FileStore
 from tractatus.catalog.ledger import Ledger
-from tractatus.catalog.normalize import normalize_raw, normalize_table
+from tractatus.catalog.normalize import normalize_table
+from tractatus.catalog.normalize.common import csv_to_arrow, ndjson_to_arrow
 from tractatus.catalog.schemas import TABLE_DEFS
 from tractatus.catalog.validate import QualityReport, validate_options
 
@@ -227,52 +229,68 @@ class Publisher:
         cached = 0
         errors = 0
 
+        # Group all pending records by (provider, root, sample_date) so all
+        # CSVs for a given ticker on a given day are concatenated into a single
+        # Arrow table and committed as one Iceberg file.
+        groups: dict[tuple[str, str, str], list[Any]] = defaultdict(list)
         for record in pending:
-            full_key = f"{table_prefix}/{record.path}"
+            groups[(record.provider, record.root, record.sample_date)].append(record)
 
+        for (provider, root, sample_date_str), group_records in groups.items():
+            paths = [r.path for r in group_records]
             try:
-                sample_dt, symbol, interval = _metadata_from_path(record.path, table_name)
+                sample_dt = (
+                    date.fromisoformat(sample_date_str)
+                    if isinstance(sample_date_str, str)
+                    else sample_date_str
+                )
 
-                if record.file_format in ("csv", "ndjson"):
-                    raw_data = self._store.read_raw(full_key)
-                    normalized, diagnostics = normalize_raw(
-                        raw_data,
-                        record.file_format,
-                        table_name,
-                        sample_date=sample_dt,
-                        symbol=symbol,
-                        interval=interval,
-                    )
-                else:
-                    arrow_table = self._store.read_parquet(full_key)
-                    normalized, diagnostics = normalize_table(
-                        arrow_table,
-                        table_name,
-                        sample_date=sample_dt,
-                        symbol=symbol,
-                        interval=interval,
-                    )
+                # Read and parse each file into a raw Arrow table (pre-normalize)
+                tables = []
+                for record in group_records:
+                    full_key = f"{table_prefix}/{record.path}"
+                    if record.file_format == "csv":
+                        tables.append(csv_to_arrow(self._store.read_raw(full_key)))
+                    elif record.file_format == "ndjson":
+                        tables.append(ndjson_to_arrow(self._store.read_raw(full_key)))
+                    else:
+                        tables.append(self._store.read_parquet(full_key))
+
+                # Concatenate then normalize once for the whole group
+                _, _, interval = _metadata_from_path(group_records[0].path, table_name)
+                combined = pa.concat_tables(tables, promote_options="default")
+                normalized, diagnostics = normalize_table(
+                    combined, table_name, sample_date=sample_dt, symbol=root, interval=interval
+                )
 
                 if diagnostics:
                     logger.info(
                         {
                             "event": "normalize_applied",
                             "table": table_name,
-                            "path": record.path,
+                            "group": f"{provider}/{root}/{sample_date_str}",
+                            "files": len(group_records),
                             "diagnostics": diagnostics,
                         }
                     )
 
-                # Validate options samples and annotate with quality columns
+                # Validate once for the whole group
                 quality: QualityReport | None = None
                 if table_name == "options":
-                    normalized, quality = validate_options(normalized)
+                    normalized, quality = validate_options(
+                        normalized,
+                        context={
+                            "provider": provider,
+                            "root": root,
+                            "sample_date": sample_date_str,
+                        },
+                    )
                     if quality.rows_degraded:
                         logger.warning(
                             {
                                 "event": "sample_quality_degraded",
                                 "table": table_name,
-                                "path": record.path,
+                                "group": f"{provider}/{root}/{sample_date_str}",
                                 "rows_total": quality.rows_total,
                                 "rows_degraded": quality.rows_degraded,
                                 "flags": sorted(quality.flags_seen),
@@ -283,13 +301,9 @@ class Publisher:
                 normalized = _sort_table(normalized, table_def.sort_keys)
 
                 iceberg_table.append(normalized)
-                self._ledger.mark_committed([record.path], table_name, quality=quality)
+                self._ledger.mark_committed(paths, table_name, quality=quality)
                 committed += 1
 
-                # Read parquet bytes added from the Iceberg snapshot summary.
-                # Added-files-size is defined by the Iceberg spec as the total
-                # size of data files added in the snapshot. Absent = None so
-                # callers can omit the ratio rather than fabricate a value.
                 try:
                     snap = iceberg_table.current_snapshot()
                     raw = (
@@ -301,37 +315,38 @@ class Publisher:
                 except Exception:
                     parquet_bytes_added = None
 
-                # Upload to cache MinIO if configured
-                cache_key = self._cache_to_minio(normalized, table_name, record.path)
+                # Upload combined table to cache MinIO if configured
+                cache_key = self._cache_to_minio(normalized, table_name, group_records[0].path)
                 if cache_key:
-                    self._ledger.mark_cached(record.path, table_name, cache_key)
+                    for path in paths:
+                        self._ledger.mark_cached(path, table_name, cache_key)
                     cached += 1
 
                 logger.info(
                     {
-                        "event": "file_committed",
+                        "event": "group_committed",
                         "table": table_name,
-                        "path": record.path,
-                        "source_bytes": record.size_bytes,
+                        "provider": provider,
+                        "root": root,
+                        "sample_date": sample_date_str,
+                        "files": len(group_records),
                         "parquet_bytes_added": parquet_bytes_added,
-                        "provider": record.provider,
-                        "root": record.root,
-                        "sample_date": record.sample_date,
                         "cached": cache_key is not None,
                     }
                 )
             except Exception as exc:
-                self._ledger.mark_error(record.path, table_name, str(exc))
+                for path in paths:
+                    self._ledger.mark_error(path, table_name, str(exc))
                 logger.error(
                     {
                         "event": "append_error",
                         "table": table_name,
-                        "path": record.path,
+                        "group": f"{provider}/{root}/{sample_date_str}",
                         "error_class": type(exc).__name__,
                         "error_message": str(exc),
                     }
                 )
-                errors += 1
+                errors += len(group_records)
 
         logger.info(
             {
