@@ -214,8 +214,6 @@ class Publisher:
     ) -> tuple[int, int, int]:
         """Normalize and append pending files to Iceberg. Returns (committed, cached, errors)."""
         pending = self._ledger.pending(table_name, after=after, before=before, providers=providers)
-        if limit is not None:
-            pending = pending[:limit]
         if not pending:
             return 0, 0, 0
 
@@ -236,7 +234,11 @@ class Publisher:
         for record in pending:
             groups[(record.provider, record.root, record.sample_date)].append(record)
 
-        for (provider, root, sample_date_str), group_records in groups.items():
+        group_items = list(groups.items())
+        if limit is not None:
+            group_items = group_items[:limit]
+
+        for (provider, root, sample_date_str), group_records in group_items:
             paths = [r.path for r in group_records]
             try:
                 sample_dt = (

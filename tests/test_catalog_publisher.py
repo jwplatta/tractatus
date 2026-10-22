@@ -31,7 +31,9 @@ def _make_config(tmp_path: Path, cache_bucket: str | None = None) -> CatalogConf
     )
 
 
-def _create_options_csv(data_root: Path, provider: str, d: date, root: str) -> Path:
+def _create_options_csv(
+    data_root: Path, provider: str, d: date, root: str, expiry: str = "2026-07-18"
+) -> Path:
     """Write a minimal options CSV file with enough columns to pass validation."""
     path = (
         data_root
@@ -40,7 +42,7 @@ def _create_options_csv(data_root: Path, provider: str, d: date, root: str) -> P
         / f"{d:%Y}"
         / f"{d:%m}"
         / f"{d:%d}"
-        / f"{root}_exp2026-07-18_{d}_14-30-00.csv"
+        / f"{root}_exp{expiry}_{d}_14-30-00.csv"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("contract_type,symbol,strike\nCALL,SPX,5000\n")
@@ -180,9 +182,11 @@ def test_append_error_marks_ledger(
 def test_append_with_limit(
     mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
 ) -> None:
-    """Limit should cap the number of files appended."""
+    """Limit should cap the number of groups (tickers) appended, not individual files."""
     config = _make_config(tmp_path)
-    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+    # Two CSVs for SPX (same group), one for AAPL (second group)
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-18")
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-25")
     _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "AAPL")
 
     mock_iceberg_table = MagicMock()
@@ -205,7 +209,46 @@ def test_append_with_limit(
         result = publisher.run(table_name="options", limit=1)
 
     publisher.close()
+    # limit=1 means 1 group (SPX with its 2 CSVs) — AAPL should not be committed
     assert result.committed == 1
+    mock_iceberg_table.append.assert_called_once()
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_append_groups_all_csvs_for_ticker(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """All CSVs for the same (provider, root, sample_date) must be committed as one group."""
+    config = _make_config(tmp_path)
+    # Three CSVs for SPX — different expiries, same sample date → one group
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-18")
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-25")
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-08-01")
+
+    mock_iceberg_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+
+    normalized = pa.table({"x": [1]})
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+    ):
+        result = publisher.run(table_name="options")
+
+    publisher.close()
+    # 3 CSVs → 1 group → 1 Iceberg append
+    assert result.committed == 1
+    mock_iceberg_table.append.assert_called_once()
 
 
 @patch("tractatus.catalog.publisher.load_catalog")
