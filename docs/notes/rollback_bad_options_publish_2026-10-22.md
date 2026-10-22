@@ -16,8 +16,8 @@ All 34,732 files failed on the first run. After fixes were applied they committe
 ```python
 from pyiceberg.catalog import load_catalog
 
-cat = load_catalog('glue', **{'type':'glue','region':'us-east-1','profile':'tickrake'})
-t = cat.load_table('tractatus.options')
+cat = load_catalog("glue", **{"type": "glue", "region": "us-east-1", "profile": "tickrake"})
+t = cat.load_table("tractatus.options")
 t.delete("sampled_at >= '2026-10-19T00:00:00+00:00' AND sampled_at < '2026-10-20T00:00:00+00:00'")
 ```
 
