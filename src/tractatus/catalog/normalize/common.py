@@ -27,6 +27,9 @@ def _types_compatible(actual: pa.DataType, expected: pa.DataType) -> bool:
     commonly infer int64 for values that are logically float), and allows
     date/timestamp variants where string is expected.
     """
+    # A fully-null column (pyarrow infers null type) is compatible with any expected type
+    if actual == pa.null():
+        return True
     if actual in _STRING_TYPES and expected in _STRING_TYPES:
         return True
     # Numeric types are castable (int64 ↔ float64)

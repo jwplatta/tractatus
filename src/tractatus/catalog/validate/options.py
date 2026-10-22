@@ -133,12 +133,12 @@ def validate_options(table: pa.Table) -> tuple[pa.Table, QualityReport]:
             quality_vals.append(None)
             flags_vals.append(None)
 
-    table = table.append_column(
-        pa.field("sample_quality", pa.string()), pa.array(quality_vals, type=pa.string())
-    )
-    table = table.append_column(
-        pa.field("quality_flags", pa.string()), pa.array(flags_vals, type=pa.string())
-    )
+    for col_name, values in (("sample_quality", quality_vals), ("quality_flags", flags_vals)):
+        arr = pa.array(values, type=pa.string())
+        if col_name in table.column_names:
+            table = table.set_column(table.column_names.index(col_name), col_name, arr)
+        else:
+            table = table.append_column(pa.field(col_name, pa.string()), arr)
 
     rows_degraded = sum(1 for f in row_flags if f)
     flags_seen = {f for flags in row_flags for f in flags}
