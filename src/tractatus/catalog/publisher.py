@@ -121,6 +121,7 @@ class Publisher:
         limit: int | None = None,
         after: date | None = None,
         before: date | None = None,
+        cache: bool = False,
     ) -> PublishResult:
         """Execute the discover → normalize → append pipeline for a table.
 
@@ -157,7 +158,12 @@ class Publisher:
         before_str = before.isoformat() if before else None
 
         committed, cached, errors = self._append(
-            table_name, limit=limit, after=after_str, before=before_str, providers=providers
+            table_name,
+            limit=limit,
+            after=after_str,
+            before=before_str,
+            providers=providers,
+            cache=cache,
         )
         result.committed = committed
         result.cached = cached
@@ -225,6 +231,7 @@ class Publisher:
         after: str | None = None,
         before: str | None = None,
         providers: list[str] | None = None,
+        cache: bool = False,
     ) -> tuple[int, int, int]:
         """Normalize and append pending files to Iceberg. Returns (committed, cached, errors)."""
         pending = self._ledger.pending(table_name, after=after, before=before, providers=providers)
@@ -337,12 +344,14 @@ class Publisher:
                 except Exception:
                     parquet_bytes_added = None
 
-                # Upload combined table to cache MinIO if configured
-                cache_key = self._cache_to_minio(normalized, table_name, group_records[0].path)
-                if cache_key:
-                    for path in paths:
-                        self._ledger.mark_cached(path, table_name, cache_key)
-                    cached += 1
+                # Upload combined table to cache MinIO if requested via --cache
+                cache_key = None
+                if cache:
+                    cache_key = self._cache_to_minio(normalized, table_name, group_records[0].path)
+                    if cache_key:
+                        for path in paths:
+                            self._ledger.mark_cached(path, table_name, cache_key)
+                        cached += 1
 
                 # Record the published artifact
                 artifact_key = (

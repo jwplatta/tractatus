@@ -230,6 +230,12 @@ def catalog_publish(
     before: Annotated[
         str | None, typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD).")
     ] = None,
+    cache: Annotated[
+        bool,
+        typer.Option(
+            "--cache/--no-cache", help="Write parquet artifacts to MinIO cache after publish."
+        ),
+    ] = False,
 ) -> None:
     """Normalize and commit discovered files to an Iceberg table.
 
@@ -251,6 +257,7 @@ def catalog_publish(
             limit=limit,
             after=parsed_after,
             before=parsed_before,
+            cache=cache,
         )
     finally:
         publisher.close()

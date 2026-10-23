@@ -317,7 +317,7 @@ def test_cache_to_minio(
             return_value=(normalized, QualityReport(1, 0, set())),
         ),
     ):
-        result = publisher.run(table_name="options")
+        result = publisher.run(table_name="options", cache=True)
 
     publisher.close()
 
