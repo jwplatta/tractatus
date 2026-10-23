@@ -442,13 +442,9 @@ class Publisher:
 
         if not overwrite:
             try:
-                self._cache_client.head_object(
-                    Bucket=self._config.cache_bucket, Key=cache_key
-                )
+                self._cache_client.head_object(Bucket=self._config.cache_bucket, Key=cache_key)
                 # Object exists — skip
-                print(
-                    f"Skipped {cache_key} — already cached. Re-run with --overwrite to replace."
-                )
+                print(f"Skipped {cache_key} — already cached. Re-run with --overwrite to replace.")
                 return None
             except Exception:
                 pass  # Object does not exist; proceed with write
@@ -553,7 +549,9 @@ class Publisher:
 
         # Apply provider / root / interval filters in Arrow (not pushed to Iceberg)
         if providers and "provider" in arrow_table.schema.names:
-            mask = pc.is_in(arrow_table["provider"], value_set=pa.array(providers, type=pa.string()))
+            mask = pc.is_in(
+                arrow_table["provider"], value_set=pa.array(providers, type=pa.string())
+            )
             arrow_table = arrow_table.filter(mask)
         if roots and "root" in arrow_table.schema.names:
             mask = pc.is_in(arrow_table["root"], value_set=pa.array(roots, type=pa.string()))
@@ -570,18 +568,16 @@ class Publisher:
         present_grain_cols = [c for c in grain_cols if c in arrow_table.schema.names]
         group_dict: dict[tuple[str, ...], list[int]] = {}
         for i in range(arrow_table.num_rows):
-            key = tuple(
-                (arrow_table[c][i].as_py() or "") for c in present_grain_cols
-            )
+            key = tuple((arrow_table[c][i].as_py() or "") for c in present_grain_cols)
             if key not in group_dict:
                 group_dict[key] = []
             group_dict[key].append(i)
 
         cached_count = 0
         for key_values, row_indices in group_dict.items():
-            group_meta: dict[str, str | None] = {
-                col: val for col, val in zip(present_grain_cols, key_values)
-            }
+            group_meta: dict[str, str | None] = dict(
+                zip(present_grain_cols, key_values, strict=True)
+            )
             # Fill in any grain cols not present in table
             for col in grain_cols:
                 if col not in group_meta:

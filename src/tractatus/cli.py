@@ -653,15 +653,20 @@ def cache_callback(
         str | None, typer.Option("--table", help="Iceberg table to cache from.")
     ] = None,
     provider: Annotated[
-        list[str] | None, typer.Option("--provider", help="Limit to specific providers (repeatable).")
+        list[str] | None,
+        typer.Option("--provider", help="Limit to specific providers (repeatable)."),
     ] = None,
     after: Annotated[
         str | None,
-        typer.Option("--after", help="Only include sample_date >= DATE (YYYY-MM-DD). Not for candles."),
+        typer.Option(
+            "--after", help="Only include sample_date >= DATE (YYYY-MM-DD). Not for candles."
+        ),
     ] = None,
     before: Annotated[
         str | None,
-        typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD). Not for candles."),
+        typer.Option(
+            "--before", help="Only include sample_date < DATE (YYYY-MM-DD). Not for candles."
+        ),
     ] = None,
     root: Annotated[
         list[str] | None, typer.Option("--root", help="Limit to specific roots (repeatable).")
