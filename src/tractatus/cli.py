@@ -47,7 +47,7 @@ init_app = typer.Typer(no_args_is_help=True, help="Create a research project.")
 data_app = typer.Typer(no_args_is_help=True, help="Retrieve Tickrake data.")
 config_app = typer.Typer(no_args_is_help=True, help="Manage Tractatus configuration.")
 catalog_app = typer.Typer(no_args_is_help=True, help="Iceberg catalog operations.")
-cache_app = typer.Typer(no_args_is_help=True, help="Local cache management.")
+cache_app = typer.Typer(no_args_is_help=False, help="Local cache management.")
 app.add_typer(init_app, name="init")
 app.add_typer(data_app, name="data")
 app.add_typer(config_app, name="config")
@@ -644,6 +644,65 @@ def _build_ledger_count_query(
         where += " AND sample_date < %s"
         params.append(before)
     return f"SELECT COUNT(*) FROM catalog_files {where}", tuple(params)
+
+
+@cache_app.callback(invoke_without_command=True)
+def cache_callback(
+    ctx: typer.Context,
+    table: Annotated[
+        str | None, typer.Option("--table", help="Iceberg table to cache from.")
+    ] = None,
+    provider: Annotated[
+        list[str] | None, typer.Option("--provider", help="Limit to specific providers (repeatable).")
+    ] = None,
+    after: Annotated[
+        str | None,
+        typer.Option("--after", help="Only include sample_date >= DATE (YYYY-MM-DD). Not for candles."),
+    ] = None,
+    before: Annotated[
+        str | None,
+        typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD). Not for candles."),
+    ] = None,
+    root: Annotated[
+        list[str] | None, typer.Option("--root", help="Limit to specific roots (repeatable).")
+    ] = None,
+    interval: Annotated[
+        str | None, typer.Option("--interval", help="Candle interval filter (candles only).")
+    ] = None,
+) -> None:
+    """Read from Iceberg, group by artifact grain, write parquet to MinIO cache, upsert ledger.
+
+    When called without a subcommand, ``--table`` is required.
+    Use ``tractatus catalog cache status|evict|clear`` for cache management subcommands.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if not table:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+
+    setup_logging("catalog", verbose=True)
+
+    parsed_after = date.fromisoformat(after) if after else None
+    parsed_before = date.fromisoformat(before) if before else None
+
+    config = CatalogConfig.load()
+    publisher = Publisher(config)
+    try:
+        cached = publisher.cache_artifacts(
+            table_name=table,
+            providers=provider or None,
+            after=parsed_after,
+            before=parsed_before,
+            roots=root or None,
+            interval=interval,
+        )
+    finally:
+        publisher.close()
+
+    typer.echo(f"Table:  {table}")
+    typer.echo(f"Cached: {cached}")
 
 
 @cache_app.command("status")

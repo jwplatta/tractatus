@@ -429,6 +429,222 @@ class Publisher:
         )
         return cache_key
 
+    def _write_to_cache(
+        self, table: pa.Table, cache_key: str, overwrite: bool = True
+    ) -> int | None:
+        """Write an Arrow table as parquet to the cache MinIO bucket at cache_key.
+
+        If overwrite is False and the object already exists, returns None without writing.
+        Returns the number of bytes written, or None if no cache client is configured or skipped.
+        """
+        if self._cache_client is None:
+            return None
+
+        if not overwrite:
+            try:
+                self._cache_client.head_object(
+                    Bucket=self._config.cache_bucket, Key=cache_key
+                )
+                # Object exists — skip
+                print(
+                    f"Skipped {cache_key} — already cached. Re-run with --overwrite to replace."
+                )
+                return None
+            except Exception:
+                pass  # Object does not exist; proceed with write
+
+        buf = io.BytesIO()
+        pq.write_table(table, buf)
+        data = buf.getvalue()
+
+        self._cache_client.put_object(
+            Bucket=self._config.cache_bucket,
+            Key=cache_key,
+            Body=data,
+        )
+        return len(data)
+
+    # --- Table grain definitions for cache_artifacts ---
+    #
+    # Maps table_name → (date_column | None, grain_columns)
+    # date_column: the Iceberg column used for --after/--before filtering (None if N/A)
+    # grain_columns: PyArrow column names that define each artifact group
+    _TABLE_GRAIN: dict[str, tuple[str | None, tuple[str, ...]]] = {
+        "options": ("sampled_at", ("provider", "root", "sample_date")),
+        "level_one_equities": ("sampled_at", ("provider", "root", "sample_date")),
+        "level_one_futures": ("sampled_at", ("provider", "root", "sample_date")),
+        "order_book": ("sampled_at", ("provider", "root", "sample_date")),
+        "candles": (None, ("provider", "interval", "root")),
+        "fundamentals": ("sampled_at", ("provider", "sample_date")),
+    }
+
+    @staticmethod
+    def _build_cache_key(table_name: str, group: dict[str, str | None]) -> str:
+        """Construct the MinIO cache key for a given artifact group."""
+        provider = group.get("provider") or "unknown"
+        root = group.get("root") or ""
+        sample_date = group.get("sample_date") or ""
+        interval = group.get("interval") or ""
+
+        if table_name == "options":
+            yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
+            return f"options/{provider}/{yyyy}/{mm}/{dd}/{root}_samples_{sample_date}.parquet"
+
+        if table_name in ("level_one_equities", "level_one_futures", "order_book"):
+            yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
+            return f"{table_name}/{provider}/{yyyy}/{mm}/{dd}/{root}.parquet"
+
+        if table_name == "candles":
+            return f"candles/{provider}/{interval}/{root}.parquet"
+
+        if table_name == "fundamentals":
+            yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
+            return f"fundamentals/{provider}/{yyyy}/{mm}/{dd}.parquet"
+
+        raise ValueError(f"Unknown table for cache key: {table_name!r}")
+
+    def cache_artifacts(
+        self,
+        table_name: str,
+        providers: list[str] | None = None,
+        after: date | None = None,
+        before: date | None = None,
+        roots: list[str] | None = None,
+        interval: str | None = None,
+        overwrite: bool = True,
+    ) -> int:
+        """Read from Iceberg, group by artifact grain, write to MinIO cache, upsert ledger.
+
+        Returns the count of artifacts successfully cached.
+        """
+        if table_name not in TABLE_DEFS:
+            raise ValueError(
+                f"Unknown table {table_name!r}. Registered tables: {', '.join(sorted(TABLE_DEFS))}"
+            )
+        if self._cache_client is None:
+            raise RuntimeError(
+                "No MinIO cache client configured. Set MINIO_ENDPOINT and MINIO_CACHE_BUCKET."
+            )
+
+        grain_def = self._TABLE_GRAIN.get(table_name)
+        if grain_def is None:
+            raise ValueError(f"No artifact grain defined for table {table_name!r}")
+
+        date_col, grain_cols = grain_def
+
+        catalog = self._iceberg_catalog()
+        full_name = f"{self._config.glue_database}.{table_name}"
+        iceberg_table = catalog.load_table(full_name)
+
+        # Build PyIceberg row filter
+        filter_parts: list[str] = []
+        if date_col and after:
+            filter_parts.append(f"{date_col} >= '{after.isoformat()}T00:00:00+00:00'")
+        if date_col and before:
+            filter_parts.append(f"{date_col} < '{before.isoformat()}T00:00:00+00:00'")
+        row_filter: Any = " and ".join(filter_parts) if filter_parts else None
+
+        scan = iceberg_table.scan(row_filter=row_filter) if row_filter else iceberg_table.scan()
+        arrow_table = scan.to_arrow()
+
+        if arrow_table.num_rows == 0:
+            logger.info({"event": "cache_artifacts_no_rows", "table": table_name})
+            return 0
+
+        # Apply provider / root / interval filters in Arrow (not pushed to Iceberg)
+        if providers and "provider" in arrow_table.schema.names:
+            mask = pc.is_in(arrow_table["provider"], value_set=pa.array(providers, type=pa.string()))
+            arrow_table = arrow_table.filter(mask)
+        if roots and "root" in arrow_table.schema.names:
+            mask = pc.is_in(arrow_table["root"], value_set=pa.array(roots, type=pa.string()))
+            arrow_table = arrow_table.filter(mask)
+        if interval and "interval" in arrow_table.schema.names:
+            mask = pc.equal(arrow_table["interval"], interval)
+            arrow_table = arrow_table.filter(mask)
+
+        if arrow_table.num_rows == 0:
+            logger.info({"event": "cache_artifacts_filtered_empty", "table": table_name})
+            return 0
+
+        # Group by grain columns, building unique groups via a dict keyed by grain tuple
+        present_grain_cols = [c for c in grain_cols if c in arrow_table.schema.names]
+        group_dict: dict[tuple[str, ...], list[int]] = {}
+        for i in range(arrow_table.num_rows):
+            key = tuple(
+                (arrow_table[c][i].as_py() or "") for c in present_grain_cols
+            )
+            if key not in group_dict:
+                group_dict[key] = []
+            group_dict[key].append(i)
+
+        cached_count = 0
+        for key_values, row_indices in group_dict.items():
+            group_meta: dict[str, str | None] = {
+                col: val for col, val in zip(present_grain_cols, key_values)
+            }
+            # Fill in any grain cols not present in table
+            for col in grain_cols:
+                if col not in group_meta:
+                    group_meta[col] = None
+
+            indices_array = pa.array(row_indices, type=pa.int64())
+            group_table = arrow_table.take(indices_array)
+
+            try:
+                cache_key = self._build_cache_key(table_name, group_meta)
+                size_bytes = self._write_to_cache(group_table, cache_key, overwrite=overwrite)
+                if size_bytes is None and not overwrite:
+                    # Skipped — object already exists
+                    continue
+
+                # Normalize sample_date to YYYY-MM-DD
+                sample_date_str: str | None = group_meta.get("sample_date")
+                if sample_date_str and "T" in sample_date_str:
+                    sample_date_str = sample_date_str[:10]
+
+                self._ledger.upsert_published(
+                    artifact_key=cache_key,
+                    table_name=table_name,
+                    provider=group_meta.get("provider"),
+                    root=group_meta.get("root"),
+                    sample_date=sample_date_str,
+                    interval=group_meta.get("interval"),
+                    cached=True,
+                    cached_at=self._ledger._now(),
+                    row_count=group_table.num_rows,
+                    size_bytes=size_bytes,
+                )
+                cached_count += 1
+                logger.info(
+                    {
+                        "event": "artifact_cached",
+                        "table": table_name,
+                        "cache_key": cache_key,
+                        "rows": group_table.num_rows,
+                        "size_bytes": size_bytes,
+                    }
+                )
+            except Exception as exc:
+                logger.error(
+                    {
+                        "event": "cache_artifact_error",
+                        "table": table_name,
+                        "group": group_meta,
+                        "error_class": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                )
+
+        logger.info(
+            {
+                "event": "cache_artifacts_completed",
+                "table": table_name,
+                "cached": cached_count,
+                "groups": len(group_dict),
+            }
+        )
+        return cached_count
+
     def _iceberg_catalog(self) -> Catalog:
         """Load PyIceberg Glue catalog."""
         props: dict[str, str] = {
