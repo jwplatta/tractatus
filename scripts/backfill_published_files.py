@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Backfill published_files from the tractatus-lakehouse MinIO bucket.
+"""Backfill published_artifacts from the tractatus-lakehouse MinIO bucket.
 
 Walks options/ under schwab and massive providers, parses artifact_key,
 provider, root, and sample_date from the object key, and upserts into
-published_files. Sets cached=True and size_bytes from object metadata.
+published_artifacts. Sets cached=True and size_bytes from object metadata.
 
 Usage:
     source .venv/bin/activate
-    python scripts/backfill_published_files.py
+    python scripts/backfill_published_artifacts.py
 """
 
 from __future__ import annotations

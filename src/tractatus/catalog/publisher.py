@@ -360,7 +360,7 @@ class Publisher:
                 except Exception as pub_exc:
                     logger.warning(
                         {
-                            "event": "published_files_write_failed",
+                            "event": "published_artifacts_write_failed",
                             "artifact_key": artifact_key,
                             "error": str(pub_exc),
                         }
