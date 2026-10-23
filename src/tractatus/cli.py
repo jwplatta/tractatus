@@ -519,7 +519,7 @@ def catalog_reset(
             for i in range(0, len(s3_keys), 1000):
                 batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
                 s3.delete_objects(
-                    Bucket=config.iceberg_bucket,
+                    Bucket=config.iceberg_bucket or "",
                     Delete={"Objects": batch},  # type: ignore[typeddict-item]
                 )
             typer.echo(f"Deleted {len(s3_keys)} orphan data files from S3.")

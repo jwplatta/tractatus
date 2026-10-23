@@ -642,8 +642,25 @@ class Publisher:
         return cached_count
 
     def _iceberg_catalog(self) -> Catalog:
-        """Load PyIceberg Glue catalog."""
-        props: dict[str, str] = {
+        """Load PyIceberg catalog — SQL (local) or Glue (AWS) based on config."""
+        if self._config.catalog_type == "sql":
+            if not self._config.iceberg_postgres_url:
+                raise ValueError("catalog_type=sql requires ICEBERG_POSTGRES_URL to be set")
+            props: dict[str, str] = {
+                "type": "sql",
+                "uri": self._config.iceberg_postgres_url,
+                "warehouse": self._config.iceberg_warehouse,
+            }
+            if self._config.minio_endpoint:
+                props["s3.endpoint"] = self._config.minio_endpoint
+                props["s3.path-style-access"] = "true"
+            if self._config.minio_access_key:
+                props["s3.access-key-id"] = self._config.minio_access_key
+            if self._config.minio_secret_key:
+                props["s3.secret-access-key"] = self._config.minio_secret_key
+            return load_catalog("sql", **props)
+
+        props = {
             "type": "glue",
             "glue.region": self._config.aws_region,
             "s3.region": self._config.aws_region,
