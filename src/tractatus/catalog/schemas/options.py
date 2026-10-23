@@ -80,9 +80,8 @@ OPTIONS_TABLE = TableDef(
         )
     ),
     sort_keys=[
-        "provider",
-        "expiration_date",
         "sampled_at",
+        "expiration_date",
         "strike",
         "contract_type",
         "symbol",

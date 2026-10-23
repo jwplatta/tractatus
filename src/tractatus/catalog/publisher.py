@@ -241,9 +241,10 @@ class Publisher:
         cached = 0
         errors = 0
 
-        # Group all pending records by (provider, root, sample_date) so all
-        # CSVs for a given ticker on a given day are concatenated into a single
-        # Arrow table and committed as one Iceberg file.
+        # Group all pending records by (provider, option_root, sample_date) so all
+        # CSVs for a given option_root on a given day are concatenated into a single
+        # Arrow table and committed as one Iceberg file per option_root per day.
+        # For non-options tables, record.symbol is the underlying ticker (same role).
         groups: dict[tuple[str, str, str], list[Any]] = defaultdict(list)
         for record in pending:
             groups[(record.provider, record.symbol, record.sample_date)].append(record)
