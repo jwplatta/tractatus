@@ -137,7 +137,7 @@ def main() -> None:
         config=Config(signature_version="s3v4"),
     )
 
-    bucket = os.environ.get("MINIO_BUCKET", "tractatus-lakehouse")
+    bucket = os.environ.get("MINIO_CACHE_BUCKET", "tractatus-lakehouse")
     paginator = client.get_paginator("list_objects_v2")
 
     upserted = 0
