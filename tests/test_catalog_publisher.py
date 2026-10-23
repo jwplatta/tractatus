@@ -362,6 +362,102 @@ def test_no_cache_without_config(
     assert result.committed == 1
 
 
+# --- cache_artifacts tests ---
+
+
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_cache_artifacts_writes_to_minio_and_upserts_ledger(
+    mock_load_catalog: MagicMock, tmp_path: Path
+) -> None:
+    """cache_artifacts should write parquet to MinIO and upsert published_artifacts."""
+    config = _make_config(tmp_path, cache_bucket="test-cache")
+    publisher = Publisher(config)
+
+    normalized = pa.table(
+        {
+            "provider": pa.array(["schwab", "schwab"], type=pa.string()),
+            "root": pa.array(["SPX", "SPX"], type=pa.string()),
+            "sample_date": pa.array(["2026-06-25", "2026-06-25"], type=pa.string()),
+        }
+    )
+
+    mock_iceberg_table = MagicMock()
+    mock_scan = MagicMock()
+    mock_scan.to_arrow.return_value = normalized
+    mock_iceberg_table.scan.return_value = mock_scan
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    mock_cache_client = MagicMock()
+    publisher._cache_client = mock_cache_client
+
+    cached = publisher.cache_artifacts(table_name="options")
+    publisher.close()
+
+    assert cached == 1
+    mock_cache_client.put_object.assert_called_once()
+    call_kwargs = mock_cache_client.put_object.call_args[1]
+    assert call_kwargs["Bucket"] == "test-cache"
+    assert call_kwargs["Key"] == "options/schwab/2026/06/25/SPX_samples_2026-06-25.parquet"
+
+    # Verify published_artifacts was upserted
+    from tractatus.catalog.ledger import Ledger  # noqa: PLC0415
+
+    ledger = Ledger(str(tmp_path / "ledger.db"))
+    artifact = ledger.get_published("options/schwab/2026/06/25/SPX_samples_2026-06-25.parquet")
+    ledger.close()
+    assert artifact is not None
+    assert artifact.cached is True
+    assert artifact.row_count == 2
+
+
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_cache_artifacts_failure_on_one_does_not_stop_others(
+    mock_load_catalog: MagicMock, tmp_path: Path
+) -> None:
+    """A failure writing one artifact should not stop others from being cached."""
+    config = _make_config(tmp_path, cache_bucket="test-cache")
+    publisher = Publisher(config)
+
+    normalized = pa.table(
+        {
+            "provider": pa.array(["schwab", "schwab", "schwab", "schwab"], type=pa.string()),
+            "root": pa.array(["SPX", "SPX", "AAPL", "AAPL"], type=pa.string()),
+            "sample_date": pa.array(
+                ["2026-06-25", "2026-06-25", "2026-06-25", "2026-06-25"], type=pa.string()
+            ),
+        }
+    )
+
+    mock_iceberg_table = MagicMock()
+    mock_scan = MagicMock()
+    mock_scan.to_arrow.return_value = normalized
+    mock_iceberg_table.scan.return_value = mock_scan
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    call_count = 0
+
+    def _put_object_side_effect(**kwargs: object) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("MinIO connection error")
+
+    mock_cache_client = MagicMock()
+    mock_cache_client.put_object.side_effect = _put_object_side_effect
+    publisher._cache_client = mock_cache_client
+
+    cached = publisher.cache_artifacts(table_name="options")
+    publisher.close()
+
+    # 2 groups total; one fails, one succeeds
+    assert cached == 1
+    assert mock_cache_client.put_object.call_count == 2
+
+
 # --- Metadata extraction tests ---
 
 
