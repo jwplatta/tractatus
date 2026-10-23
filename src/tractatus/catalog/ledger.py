@@ -22,6 +22,24 @@ from tractatus.catalog.validate.options import QualityReport
 
 
 @dataclass
+class PublishedArtifact:
+    """A row in the published_artifacts table."""
+
+    artifact_key: str
+    table_name: str | None
+    provider: str | None
+    root: str | None
+    sample_date: str | None
+    interval: str | None
+    committed_at: str | None
+    cached: bool
+    cached_at: str | None
+    row_count: int | None
+    size_bytes: int | None
+    updated_at: str
+
+
+@dataclass
 class FileRecord:
     """A row in the publication ledger."""
 
@@ -75,6 +93,33 @@ CREATE TABLE IF NOT EXISTS catalog_files (
 
 _CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_catalog_files_status ON catalog_files (status)"
 
+_CREATE_PUBLISHED_FILES = """\
+CREATE TABLE IF NOT EXISTS published_artifacts (
+    artifact_key  TEXT PRIMARY KEY,
+    table_name    TEXT,
+    provider      TEXT,
+    root          TEXT,
+    sample_date   TEXT,
+    interval      TEXT,
+    committed_at  TEXT,
+    cached        INTEGER NOT NULL DEFAULT 0,
+    cached_at     TEXT,
+    row_count     INTEGER,
+    size_bytes    INTEGER,
+    updated_at    TEXT NOT NULL
+)
+"""
+
+_CREATE_PUBLISHED_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_published_artifacts_root_date "
+    "ON published_artifacts (table_name, root, sample_date)"
+)
+
+_PUBLISHED_COLUMNS = (
+    "artifact_key, table_name, provider, root, sample_date, interval, "
+    "committed_at, cached, cached_at, row_count, size_bytes, updated_at"
+)
+
 _COLUMNS = (
     "path, table_name, sha256, size_bytes, provider, root, sample_date, "
     "file_format, s3_key, status, error, discovered_at, committed_at, "
@@ -106,9 +151,11 @@ class Ledger:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create the catalog_files table and indexes if they don't exist."""
+        """Create tables and indexes if they don't exist."""
         self._conn.execute(_CREATE_TABLE)
         self._conn.execute(_CREATE_INDEX)
+        self._conn.execute(_CREATE_PUBLISHED_FILES)
+        self._conn.execute(_CREATE_PUBLISHED_INDEX)
         if not self._is_pg:
             self._conn.commit()
 
@@ -132,6 +179,94 @@ class Ledger:
 
     def close(self) -> None:
         self._conn.close()
+
+    # --- Published files ---
+
+    def upsert_published(
+        self,
+        artifact_key: str,
+        table_name: str | None = None,
+        provider: str | None = None,
+        root: str | None = None,
+        sample_date: str | None = None,
+        interval: str | None = None,
+        committed_at: str | None = None,
+        cached: bool = False,
+        cached_at: str | None = None,
+        row_count: int | None = None,
+        size_bytes: int | None = None,
+    ) -> None:
+        """Insert or update a published_artifacts record."""
+        now = self._now()
+        self._execute(
+            """\
+            INSERT INTO published_artifacts (artifact_key, table_name, provider, root, sample_date,
+                interval, committed_at, cached, cached_at, row_count, size_bytes, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (artifact_key) DO UPDATE SET
+                table_name   = COALESCE(EXCLUDED.table_name, published_artifacts.table_name),
+                provider     = COALESCE(EXCLUDED.provider, published_artifacts.provider),
+                root         = COALESCE(EXCLUDED.root, published_artifacts.root),
+                sample_date  = COALESCE(EXCLUDED.sample_date, published_artifacts.sample_date),
+                interval     = COALESCE(EXCLUDED.interval, published_artifacts.interval),
+                committed_at = COALESCE(EXCLUDED.committed_at, published_artifacts.committed_at),
+                cached       = EXCLUDED.cached,
+                cached_at    = COALESCE(EXCLUDED.cached_at, published_artifacts.cached_at),
+                row_count    = COALESCE(EXCLUDED.row_count, published_artifacts.row_count),
+                size_bytes   = COALESCE(EXCLUDED.size_bytes, published_artifacts.size_bytes),
+                updated_at   = EXCLUDED.updated_at
+            """,
+            (
+                artifact_key,
+                table_name,
+                provider,
+                root,
+                sample_date,
+                interval,
+                committed_at,
+                int(cached),
+                cached_at,
+                row_count,
+                size_bytes,
+                now,
+            ),
+        )
+
+    def get_published(self, artifact_key: str) -> PublishedArtifact | None:
+        """Look up a single published_artifacts record."""
+        row = self._fetchone(
+            f"SELECT {_PUBLISHED_COLUMNS} FROM published_artifacts WHERE artifact_key = %s",
+            (artifact_key,),
+        )
+        if not row:
+            return None
+        return PublishedArtifact(
+            artifact_key=row[0],
+            table_name=row[1],
+            provider=row[2],
+            root=row[3],
+            sample_date=row[4],
+            interval=row[5],
+            committed_at=row[6],
+            cached=bool(row[7]),
+            cached_at=row[8],
+            row_count=row[9],
+            size_bytes=row[10],
+            updated_at=row[11],
+        )
+
+    def artifact_summary(self, table_name: str | None = None) -> dict[str, int]:
+        """Return counts of total and cached published artifacts."""
+        where = "WHERE 1=1"
+        params: list[Any] = []
+        if table_name:
+            where += " AND table_name = %s"
+            params.append(table_name)
+        row = self._fetchone(
+            f"SELECT COUNT(*), SUM(cached) FROM published_artifacts {where}",
+            tuple(params),
+        )
+        return {"total": row[0] or 0, "cached": row[1] or 0}
 
     @staticmethod
     def _now() -> str:

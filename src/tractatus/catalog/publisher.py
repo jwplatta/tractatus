@@ -338,6 +338,34 @@ class Publisher:
                         self._ledger.mark_cached(path, table_name, cache_key)
                     cached += 1
 
+                # Record the published artifact
+                artifact_key = (
+                    cache_key
+                    or f"{table_name}/{provider}/{sample_date_str[:4]}/{sample_date_str[5:7]}/{sample_date_str[8:10]}/{root}_samples_{sample_date_str}.parquet"
+                )
+                try:
+                    self._ledger.upsert_published(
+                        artifact_key=artifact_key,
+                        table_name=table_name,
+                        provider=provider,
+                        root=root,
+                        sample_date=sample_date_str,
+                        interval=interval,
+                        committed_at=self._ledger._now(),
+                        cached=cache_key is not None,
+                        cached_at=self._ledger._now() if cache_key else None,
+                        row_count=normalized.num_rows,
+                        size_bytes=parquet_bytes_added,
+                    )
+                except Exception as pub_exc:
+                    logger.warning(
+                        {
+                            "event": "published_artifacts_write_failed",
+                            "artifact_key": artifact_key,
+                            "error": str(pub_exc),
+                        }
+                    )
+
                 logger.info(
                     {
                         "event": "group_committed",
