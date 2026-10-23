@@ -406,7 +406,7 @@ def catalog_sync_ledger(
                 sha256="",
                 size_bytes=task.file.file_size_in_bytes,
                 provider=provider,
-                root=root,
+                symbol=root,
                 sample_date=sample_date,
             )
             ledger.mark_committed([relative_path], table)
@@ -519,7 +519,7 @@ def catalog_reset(
             for i in range(0, len(s3_keys), 1000):
                 batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
                 s3.delete_objects(
-                    Bucket=config.iceberg_bucket,
+                    Bucket=config.iceberg_bucket or "",
                     Delete={"Objects": batch},  # type: ignore[typeddict-item]
                 )
             typer.echo(f"Deleted {len(s3_keys)} orphan data files from S3.")
@@ -557,6 +557,58 @@ def catalog_setup() -> None:
         props["s3.profile-name"] = config.aws_profile
 
     catalog = load_catalog("glue", **props)
+
+    for table_name in sorted(TABLE_DEFS):
+        full_name = f"{config.glue_database}.{table_name}"
+        table = ensure_table(catalog, config.glue_database, table_name)
+        typer.echo(f"{full_name} — {len(table.schema().fields)} fields")
+
+
+@catalog_app.command("init-local")
+def catalog_init_local() -> None:
+    """Initialize the local Iceberg catalog (PostgreSQL + MinIO).
+
+    Creates the tractatus-iceberg MinIO bucket if it does not exist, then
+    creates all Iceberg tables in the local SQL catalog. Requires
+    ICEBERG_CATALOG_TYPE=sql and MINIO_ICEBERG_BUCKET to be set.
+
+    Safe to re-run — existing tables and buckets are left untouched.
+    """
+    from botocore.config import Config  # noqa: PLC0415
+    from botocore.exceptions import ClientError  # noqa: PLC0415
+
+    from tractatus.catalog.schemas import TABLE_DEFS, ensure_table  # noqa: PLC0415
+
+    config = CatalogConfig.load()
+
+    if config.catalog_type != "sql":
+        typer.echo("Error: ICEBERG_CATALOG_TYPE must be 'sql' to use init-local.", err=True)
+        raise typer.Exit(1)
+
+    if not config.iceberg_minio_bucket:
+        typer.echo("Error: MINIO_ICEBERG_BUCKET is not set.", err=True)
+        raise typer.Exit(1)
+
+    # Create MinIO bucket if it doesn't exist
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=config.minio_endpoint,
+        aws_access_key_id=config.minio_access_key or "",
+        aws_secret_access_key=config.minio_secret_key or "",
+        region_name="us-east-1",
+        config=Config(signature_version="s3v4"),
+    )
+    try:
+        s3.head_bucket(Bucket=config.iceberg_minio_bucket)
+        typer.echo(f"Bucket '{config.iceberg_minio_bucket}' already exists.")
+    except ClientError:
+        s3.create_bucket(Bucket=config.iceberg_minio_bucket)
+        typer.echo(f"Created bucket '{config.iceberg_minio_bucket}'.")
+
+    # Load SQL catalog and create tables
+    publisher = Publisher(config)
+    catalog = publisher._iceberg_catalog()
+    publisher.close()
 
     for table_name in sorted(TABLE_DEFS):
         full_name = f"{config.glue_database}.{table_name}"

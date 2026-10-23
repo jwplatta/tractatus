@@ -28,7 +28,7 @@ class DiscoveredFile:
 
     relative_path: str
     provider: str
-    root: str
+    symbol: str
     sample_date: date
     sha256: str
     size_bytes: int
@@ -260,7 +260,7 @@ def discover_files(
             DiscoveredFile(
                 relative_path=relative_key,
                 provider=provider,
-                root=root,
+                symbol=root,
                 sample_date=sample_date,
                 sha256=store.sha256(full_key),
                 size_bytes=size_bytes,

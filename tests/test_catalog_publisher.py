@@ -19,6 +19,7 @@ def _make_config(tmp_path: Path, cache_bucket: str | None = None) -> CatalogConf
     data_root = tmp_path / "data"
     data_root.mkdir()
     return CatalogConfig(
+        catalog_type="glue",
         iceberg_bucket="test-bucket",
         iceberg_warehouse="s3://test-bucket",
         glue_database="tractatus",

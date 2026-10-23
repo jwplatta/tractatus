@@ -23,7 +23,7 @@ def test_record_and_retrieve(ledger: Ledger) -> None:
         sha256="abc123",
         size_bytes=1024,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-06-25",
         file_format="csv",
     )
@@ -35,7 +35,7 @@ def test_record_and_retrieve(ledger: Ledger) -> None:
     assert record.sha256 == "abc123"
     assert record.size_bytes == 1024
     assert record.provider == "schwab"
-    assert record.root == "SPX"
+    assert record.symbol == "SPX"
     assert record.sample_date == "2026-06-25"
     assert record.file_format == "csv"
 
@@ -47,7 +47,7 @@ def test_idempotent_same_hash(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -60,7 +60,7 @@ def test_idempotent_same_hash(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -77,7 +77,7 @@ def test_hash_change_resets_status(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -90,7 +90,7 @@ def test_hash_change_resets_status(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -109,7 +109,7 @@ def test_status_transitions(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -126,7 +126,7 @@ def test_mark_error(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -145,7 +145,7 @@ def test_pending(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -155,7 +155,7 @@ def test_pending(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="AAPL",
+        symbol="AAPL",
         sample_date="2026-01-02",
         file_format="csv",
     )
@@ -172,7 +172,7 @@ def test_summary(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -182,7 +182,7 @@ def test_summary(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="AAPL",
+        symbol="AAPL",
         sample_date="2026-01-02",
         file_format="csv",
     )
@@ -199,7 +199,7 @@ def test_summary_all_tables(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -209,7 +209,7 @@ def test_summary_all_tables(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="SPY",
+        symbol="SPY",
         sample_date="2026-01-02",
         file_format="ndjson",
     )
@@ -226,7 +226,7 @@ def test_tables_are_isolated(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -236,7 +236,7 @@ def test_tables_are_isolated(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="ndjson",
     )
@@ -256,7 +256,7 @@ def test_delete_all(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -266,7 +266,7 @@ def test_delete_all(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="SPY",
+        symbol="SPY",
         sample_date="2026-01-02",
         file_format="ndjson",
     )
@@ -285,7 +285,7 @@ def test_delete_filtered_by_date(ledger: Ledger) -> None:
             sha256=path,
             size_bytes=100,
             provider="schwab",
-            root="SPX",
+            symbol="SPX",
             sample_date=sd,
             file_format="csv",
         )
@@ -304,7 +304,7 @@ def test_delete_filtered_by_provider(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -314,7 +314,7 @@ def test_delete_filtered_by_provider(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="tradier",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -332,7 +332,7 @@ def test_pending_filtered_by_date(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-10-15",
         file_format="csv",
     )
@@ -342,7 +342,7 @@ def test_pending_filtered_by_date(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-12-15",
         file_format="csv",
     )
@@ -358,7 +358,7 @@ def test_pending_filtered_by_provider(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-10-15",
         file_format="csv",
     )
@@ -368,7 +368,7 @@ def test_pending_filtered_by_provider(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="tradier",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-10-15",
         file_format="csv",
     )
@@ -384,7 +384,7 @@ def test_pending_no_filters_returns_all(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-10-15",
         file_format="csv",
     )
@@ -394,7 +394,7 @@ def test_pending_no_filters_returns_all(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="tradier",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-12-15",
         file_format="csv",
     )
@@ -410,7 +410,7 @@ def test_get_s3_keys_filtered(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2025-12-15",
         file_format="csv",
     )
@@ -420,7 +420,7 @@ def test_get_s3_keys_filtered(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-15",
         file_format="csv",
     )
@@ -451,7 +451,7 @@ def test_mark_cached(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -471,7 +471,7 @@ def test_mark_cache_accessed(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -494,7 +494,7 @@ def test_clear_cache_entry(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -515,7 +515,7 @@ def test_cached_files(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -525,7 +525,7 @@ def test_cached_files(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="AAPL",
+        symbol="AAPL",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -543,7 +543,7 @@ def test_cache_summary(ledger: Ledger) -> None:
         sha256="aaa",
         size_bytes=100,
         provider="schwab",
-        root="SPX",
+        symbol="SPX",
         sample_date="2026-01-01",
         file_format="csv",
     )
@@ -553,7 +553,7 @@ def test_cache_summary(ledger: Ledger) -> None:
         sha256="bbb",
         size_bytes=200,
         provider="schwab",
-        root="AAPL",
+        symbol="AAPL",
         sample_date="2026-01-01",
         file_format="csv",
     )

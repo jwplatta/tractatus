@@ -34,7 +34,7 @@ def test_discover_finds_csv(tmp_path: Path) -> None:
     store = LocalFileStore(tmp_path)
     files = discover_files(store)
     assert len(files) == 2
-    roots = {f.root for f in files}
+    roots = {f.symbol for f in files}
     assert roots == {"SPX", "AAPL"}
 
     for f in files:
@@ -158,7 +158,7 @@ def test_discover_level_one_equities(tmp_path: Path) -> None:
     store = LocalFileStore(tmp_path)
     files = discover_files(store, table_name="level_one_equities")
     assert len(files) == 2
-    roots = {f.root for f in files}
+    roots = {f.symbol for f in files}
     assert roots == {"SPY", "QQQ"}
     assert all(f.sample_date == date(2026, 10, 15) for f in files)
     assert all(f.file_format == "ndjson" for f in files)
@@ -173,7 +173,7 @@ def test_discover_level_one_futures(tmp_path: Path) -> None:
     store = LocalFileStore(tmp_path)
     files = discover_files(store, table_name="level_one_futures")
     assert len(files) == 2
-    roots = {f.root for f in files}
+    roots = {f.symbol for f in files}
     assert roots == {"^ES", "^NQ"}
     assert all(f.sample_date == date(2026, 10, 15) for f in files)
 
@@ -187,7 +187,7 @@ def test_discover_candles(tmp_path: Path) -> None:
     files = discover_files(store, table_name="candles")
     assert len(files) == 2
     assert all(f.provider == "schwab" for f in files)
-    assert {f.root for f in files} == {"SPX", "AAPL"}
+    assert {f.symbol for f in files} == {"SPX", "AAPL"}
     assert all(f.sample_date == d for f in files)
     assert all(f.metadata.get("frequency") == "5min" for f in files)
     assert all(f.file_format == "csv" for f in files)
@@ -226,7 +226,7 @@ def test_discover_fundamentals(tmp_path: Path) -> None:
     files = discover_files(store, table_name="fundamentals")
     assert len(files) == 1
     assert files[0].sample_date == date(2026, 10, 15)
-    assert files[0].root == "all"
+    assert files[0].symbol == "all"
     assert files[0].file_format == "ndjson"
 
 
@@ -239,7 +239,7 @@ def test_discover_economic_events(tmp_path: Path) -> None:
     assert len(files) == 2
     sources = {f.provider for f in files}
     assert sources == {"bls", "fred"}
-    categories = {f.root for f in files}
+    categories = {f.symbol for f in files}
     assert categories == {"economic", "fomc"}
 
 

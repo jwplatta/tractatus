@@ -9,7 +9,12 @@ from __future__ import annotations
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from tractatus.catalog.normalize.common import align_to_schema, get_canonical, validate_input_schema
+from tractatus.catalog.normalize.common import (
+    align_to_schema,
+    get_canonical,
+    set_literal_column,
+    validate_input_schema,
+)
 from tractatus.catalog.schemas.candles import CANDLES_TABLE
 
 _COLUMNS, _TYPES = get_canonical(CANDLES_TABLE.schema)
@@ -28,6 +33,7 @@ def normalize_candles(
     table: pa.Table,
     symbol: str | None = None,
     interval: str | None = None,
+    provider: str | None = None,
 ) -> tuple[pa.Table, list[str]]:
     """Normalize a candles Arrow table to the canonical schema."""
     diagnostics: list[str] = []
@@ -63,5 +69,7 @@ def normalize_candles(
     # Align to canonical schema
     table, align_diags = align_to_schema(table, _COLUMNS, _TYPES)
     diagnostics.extend(align_diags)
+
+    table = set_literal_column(table, "provider", provider)
 
     return table, diagnostics

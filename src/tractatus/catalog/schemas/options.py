@@ -67,6 +67,9 @@ OPTIONS_TABLE = TableDef(
         NestedField(field_id=41, name="non_standard", field_type=BooleanType(), required=False),
         NestedField(field_id=42, name="sample_quality", field_type=StringType(), required=False),
         NestedField(field_id=43, name="quality_flags", field_type=StringType(), required=False),
+        NestedField(field_id=44, name="option_root", field_type=StringType(), required=False),
+        NestedField(field_id=45, name="underlying_symbol", field_type=StringType(), required=False),
+        NestedField(field_id=46, name="provider", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -76,7 +79,13 @@ OPTIONS_TABLE = TableDef(
             name="sampled_at_month",
         )
     ),
-    sort_keys=["expiration_date", "sampled_at", "strike", "contract_type", "symbol"],
+    sort_keys=[
+        "sampled_at",
+        "expiration_date",
+        "strike",
+        "contract_type",
+        "symbol",
+    ],
     properties={
         "write.parquet.compression-codec": "zstd",
         "write.parquet.compression-level": "3",

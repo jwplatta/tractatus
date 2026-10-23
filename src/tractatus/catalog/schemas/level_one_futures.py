@@ -101,6 +101,7 @@ LEVEL_ONE_FUTURES_TABLE = TableDef(
         NestedField(field_id=133, name="settlement_date", field_type=StringType(), required=False),
         # Residual extra_json — unmapped keys preserved as raw JSON string.
         NestedField(field_id=200, name="extra_json", field_type=StringType(), required=False),
+        NestedField(field_id=201, name="provider", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -110,7 +111,7 @@ LEVEL_ONE_FUTURES_TABLE = TableDef(
             name="sample_date_month",
         )
     ),
-    sort_keys=["received_at", "quote_time", "trade_time"],
+    sort_keys=["provider", "received_at", "quote_time", "trade_time"],
     properties={
         "write.parquet.compression-codec": "zstd",
         "write.parquet.compression-level": "3",

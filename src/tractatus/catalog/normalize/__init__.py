@@ -36,24 +36,28 @@ def normalize_table(
     sample_date: date | None = None,
     symbol: str | None = None,
     interval: str | None = None,
+    provider: str | None = None,
 ) -> tuple[pa.Table, list[str]]:
     """Normalize an Arrow table to the canonical schema for *table_name*.
 
     Extra keyword arguments are forwarded to per-table normalizers that need
-    metadata derived from the file path (e.g. sample_date, symbol, interval).
+    metadata derived from the file path (e.g. sample_date, symbol, interval, provider).
+
+    For options, ``symbol`` is used as the ``option_root`` (the underlying root ticker
+    derived from the file path, e.g. ``AAPL`` or ``SPXW``).
     """
     if table_name == "options":
-        return normalize_options(table)
+        return normalize_options(table, option_root=symbol, provider=provider)
     if table_name == "level_one_equities":
-        return normalize_level_one_equities(table, sample_date=sample_date)
+        return normalize_level_one_equities(table, sample_date=sample_date, provider=provider)
     if table_name == "level_one_futures":
-        return normalize_level_one_futures(table, sample_date=sample_date)
+        return normalize_level_one_futures(table, sample_date=sample_date, provider=provider)
     if table_name == "order_book":
-        return normalize_order_book(table, sample_date=sample_date)
+        return normalize_order_book(table, sample_date=sample_date, provider=provider)
     if table_name == "candles":
-        return normalize_candles(table, symbol=symbol, interval=interval)
+        return normalize_candles(table, symbol=symbol, interval=interval, provider=provider)
     if table_name == "fundamentals":
-        return normalize_fundamentals(table)
+        return normalize_fundamentals(table, provider=provider)
     if table_name == "economic_events":
         return normalize_economic_events(table)
     raise ValueError(f"No normalizer registered for table {table_name!r}")

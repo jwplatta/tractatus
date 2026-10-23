@@ -59,6 +59,7 @@ ORDER_BOOK_TABLE = TableDef(
             field_type=ListType(element_id=9, element=_PRICE_LEVEL_STRUCT, element_required=False),
             required=False,
         ),
+        NestedField(field_id=10, name="provider", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -68,7 +69,7 @@ ORDER_BOOK_TABLE = TableDef(
             name="sample_date_month",
         )
     ),
-    sort_keys=["received_at", "book_time"],
+    sort_keys=["provider", "received_at", "book_time"],
     properties={
         "write.parquet.compression-codec": "zstd",
         "write.parquet.compression-level": "5",
