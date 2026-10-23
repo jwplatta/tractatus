@@ -85,7 +85,7 @@ class TestNormalizeLevelOneEquities:
             table, "level_one_equities", sample_date=datetime.date(2026, 10, 15)
         )
         assert "job_type" not in result.column_names
-        assert "provider" not in result.column_names
+        assert "provider" in result.column_names
         assert any("Stripped metadata" in d for d in diags)
 
     def test_adds_sample_date(self) -> None:
@@ -274,7 +274,7 @@ class TestNormalizeOrderBook:
             table, "order_book", sample_date=datetime.date(2026, 10, 15)
         )
         assert "job_type" not in result.column_names
-        assert "provider" not in result.column_names
+        assert "provider" in result.column_names
 
     def test_adds_sample_date(self) -> None:
         table = self._make_table()
@@ -344,8 +344,8 @@ class TestNormalizeFundamentals:
     def test_adds_missing_columns(self) -> None:
         table = self._make_table()
         result, diags = normalize_table(table, "fundamentals")
-        # Should have all 69 columns
-        assert len(result.column_names) == 69
+        # Should have all 70 columns (69 original + provider)
+        assert len(result.column_names) == 70
         # Missing columns should be null
         assert result.column("htb_quantity")[0].as_py() is None
 

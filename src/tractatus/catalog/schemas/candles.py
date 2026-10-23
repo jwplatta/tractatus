@@ -26,6 +26,7 @@ CANDLES_TABLE = TableDef(
         NestedField(field_id=6, name="low", field_type=DoubleType(), required=False),
         NestedField(field_id=7, name="close", field_type=DoubleType(), required=False),
         NestedField(field_id=8, name="volume", field_type=LongType(), required=False),
+        NestedField(field_id=9, name="provider", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -35,7 +36,7 @@ CANDLES_TABLE = TableDef(
             name="interval_id",
         )
     ),
-    sort_keys=["datetime"],
+    sort_keys=["provider", "datetime"],
     properties={
         "write.parquet.compression-codec": "zstd",
         "write.parquet.compression-level": "3",

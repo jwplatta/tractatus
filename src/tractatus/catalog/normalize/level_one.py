@@ -20,6 +20,7 @@ from tractatus.catalog.normalize.common import (
     epoch_ms_to_timestamp,
     get_canonical,
     iso_string_to_timestamp,
+    set_literal_column,
     validate_input_schema,
 )
 from tractatus.catalog.schemas.level_one_equities import (
@@ -157,7 +158,7 @@ def _strip_metadata_fields(table: pa.Table) -> tuple[pa.Table, list[str]]:
 
 
 def normalize_level_one_equities(
-    table: pa.Table, sample_date: date_type | None = None
+    table: pa.Table, sample_date: date_type | None = None, provider: str | None = None
 ) -> tuple[pa.Table, list[str]]:
     """Normalize a level_one equities Arrow table to the canonical schema."""
     diagnostics: list[str] = []
@@ -189,11 +190,13 @@ def normalize_level_one_equities(
     table, align_diags = align_to_schema(table, _EQ_COLUMNS, _EQ_TYPES)
     diagnostics.extend(align_diags)
 
+    table = set_literal_column(table, "provider", provider)
+
     return table, diagnostics
 
 
 def normalize_level_one_futures(
-    table: pa.Table, sample_date: date_type | None = None
+    table: pa.Table, sample_date: date_type | None = None, provider: str | None = None
 ) -> tuple[pa.Table, list[str]]:
     """Normalize a level_one futures Arrow table to the canonical schema."""
     diagnostics: list[str] = []
@@ -224,5 +227,7 @@ def normalize_level_one_futures(
     # Align to canonical schema
     table, align_diags = align_to_schema(table, _FUT_COLUMNS, _FUT_TYPES)
     diagnostics.extend(align_diags)
+
+    table = set_literal_column(table, "provider", provider)
 
     return table, diagnostics

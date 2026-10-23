@@ -152,6 +152,21 @@ def iso_string_to_timestamp(col: pa.Array) -> pa.Array:
     return pc.cast(col, _TS_US_UTC)
 
 
+def set_literal_column(table: pa.Table, name: str, value: str | None) -> pa.Table:
+    """Set a string column to a single literal value on every row.
+
+    If *value* is None the column is filled with nulls. If the column already
+    exists in the table it is replaced; otherwise it is appended.
+    """
+    col = pa.array(
+        [value] * len(table),
+        type=pa.string(),
+    )
+    if name in table.column_names:
+        return table.set_column(table.column_names.index(name), name, col)
+    return table.append_column(name, col)
+
+
 def write_canonical_parquet(
     table: pa.Table,
     dest: Path | BinaryIO,

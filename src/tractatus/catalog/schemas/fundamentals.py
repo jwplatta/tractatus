@@ -125,6 +125,7 @@ FUNDAMENTALS_TABLE = TableDef(
             field_id=68, name="last_earnings_date", field_type=TimestamptzType(), required=False
         ),
         NestedField(field_id=69, name="sampled_at", field_type=TimestamptzType(), required=False),
+        NestedField(field_id=70, name="provider", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -134,7 +135,7 @@ FUNDAMENTALS_TABLE = TableDef(
             name="sample_date_month",
         )
     ),
-    sort_keys=["sample_date", "symbol"],
+    sort_keys=["provider", "sample_date", "symbol"],
     properties={
         "write.parquet.compression-codec": "zstd",
         "write.parquet.compression-level": "3",

@@ -8,7 +8,12 @@ from __future__ import annotations
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from tractatus.catalog.normalize.common import align_to_schema, get_canonical, validate_input_schema
+from tractatus.catalog.normalize.common import (
+    align_to_schema,
+    get_canonical,
+    set_literal_column,
+    validate_input_schema,
+)
 from tractatus.catalog.schemas.fundamentals import (
     DATE_COLUMNS,
     FUNDAMENTALS_TABLE,
@@ -25,7 +30,9 @@ _EXPECTED_INPUT: dict[str, pa.DataType] = {
 }
 
 
-def normalize_fundamentals(table: pa.Table) -> tuple[pa.Table, list[str]]:
+def normalize_fundamentals(
+    table: pa.Table, provider: str | None = None
+) -> tuple[pa.Table, list[str]]:
     """Normalize a fundamentals Arrow table to the canonical schema."""
     diagnostics: list[str] = []
 
@@ -63,5 +70,7 @@ def normalize_fundamentals(table: pa.Table) -> tuple[pa.Table, list[str]]:
     # Align to canonical schema
     table, align_diags = align_to_schema(table, _COLUMNS, _TYPES)
     diagnostics.extend(align_diags)
+
+    table = set_literal_column(table, "provider", provider)
 
     return table, diagnostics

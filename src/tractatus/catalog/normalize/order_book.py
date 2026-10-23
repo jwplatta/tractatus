@@ -18,6 +18,7 @@ from tractatus.catalog.normalize.common import (
     align_to_schema,
     get_canonical,
     iso_string_to_timestamp,
+    set_literal_column,
     validate_input_schema,
 )
 from tractatus.catalog.schemas.order_book import ORDER_BOOK_TABLE
@@ -79,7 +80,7 @@ def _strip_metadata_fields(table: pa.Table) -> tuple[pa.Table, list[str]]:
 
 
 def normalize_order_book(
-    table: pa.Table, sample_date: date_type | None = None
+    table: pa.Table, sample_date: date_type | None = None, provider: str | None = None
 ) -> tuple[pa.Table, list[str]]:
     """Normalize an order_book Arrow table to the canonical schema."""
     diagnostics: list[str] = []
@@ -125,5 +126,7 @@ def normalize_order_book(
     # Align to canonical schema
     table, align_diags = align_to_schema(table, _COLUMNS, _TYPES)
     diagnostics.extend(align_diags)
+
+    table = set_literal_column(table, "provider", provider)
 
     return table, diagnostics
