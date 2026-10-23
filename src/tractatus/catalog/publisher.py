@@ -200,7 +200,7 @@ class Publisher:
                 sha256=f.sha256,
                 size_bytes=f.size_bytes,
                 provider=f.provider,
-                root=f.root,
+                symbol=f.symbol,
                 sample_date=f.sample_date.isoformat(),
                 file_format=f.file_format,
             )
@@ -246,7 +246,7 @@ class Publisher:
         # Arrow table and committed as one Iceberg file.
         groups: dict[tuple[str, str, str], list[Any]] = defaultdict(list)
         for record in pending:
-            groups[(record.provider, record.root, record.sample_date)].append(record)
+            groups[(record.provider, record.symbol, record.sample_date)].append(record)
 
         group_items = list(groups.items())
         if limit is not None:
@@ -276,7 +276,12 @@ class Publisher:
                 _, _, interval = _metadata_from_path(group_records[0].path, table_name)
                 combined = pa.concat_tables(tables, promote_options="default")
                 normalized, diagnostics = normalize_table(
-                    combined, table_name, sample_date=sample_dt, symbol=root, interval=interval
+                    combined,
+                    table_name,
+                    sample_date=sample_dt,
+                    symbol=root,
+                    interval=interval,
+                    provider=provider,
                 )
 
                 if diagnostics:
@@ -348,7 +353,7 @@ class Publisher:
                         artifact_key=artifact_key,
                         table_name=table_name,
                         provider=provider,
-                        root=root,
+                        symbol=root,
                         sample_date=sample_date_str,
                         interval=interval,
                         committed_at=self._ledger._now(),
@@ -602,7 +607,7 @@ class Publisher:
                     artifact_key=cache_key,
                     table_name=table_name,
                     provider=group_meta.get("provider"),
-                    root=group_meta.get("root"),
+                    symbol=group_meta.get("symbol"),
                     sample_date=sample_date_str,
                     interval=group_meta.get("interval"),
                     cached=True,

@@ -70,14 +70,29 @@ _EXPECTED_INPUT: dict[str, pa.DataType] = {
 # Timestamp columns that arrive as UTC ISO 8601 strings in the CSV.
 _TIMESTAMP_COLS = ("sampled_at", "quote_at", "trade_at")
 
-# Mapping from option root → underlying symbol for non-standard index options.
-# Equity options not in this map use the option_root directly as underlying_symbol.
+# Mapping from option root → underlying symbol for index options where the root
+# does not equal the underlying symbol. Equity options not in this map use the
+# option_root directly as underlying_symbol.
+#
+# Source: tractatus universes config index_symbols section.
 _ROOT_TO_UNDERLYING: dict[str, str] = {
+    # $SPX
+    "SPX": "$SPX",
     "SPXW": "$SPX",
+    # $NDX
+    "NDX": "$NDX",
     "NDXP": "$NDX",
+    # $RUT
+    "RUT": "$RUT",
     "RUTW": "$RUT",
-    "XSP": "$SPX",
-    "NANOS": "$SPX",
+    # $XSP — mini-SPX; underlying is $XSP, not $SPX
+    "XSP": "$XSP",
+    # $VIX
+    "VIX": "$VIX",
+    "VIXW": "$VIX",
+    # $DJX
+    "DJX": "$DJX",
+    "DJXW": "$DJX",
 }
 
 # Regex to extract the option root from a contract symbol (e.g. "SPXW 261023C00125000" → "SPXW").

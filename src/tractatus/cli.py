@@ -406,7 +406,7 @@ def catalog_sync_ledger(
                 sha256="",
                 size_bytes=task.file.file_size_in_bytes,
                 provider=provider,
-                root=root,
+                symbol=root,
                 sample_date=sample_date,
             )
             ledger.mark_committed([relative_path], table)

@@ -28,7 +28,7 @@ class PublishedArtifact:
     artifact_key: str
     table_name: str | None
     provider: str | None
-    root: str | None
+    symbol: str | None
     sample_date: str | None
     interval: str | None
     committed_at: str | None
@@ -48,7 +48,7 @@ class FileRecord:
     sha256: str
     size_bytes: int
     provider: str
-    root: str
+    symbol: str
     sample_date: str
     file_format: str
     s3_key: str | None
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS catalog_files (
     sha256           TEXT NOT NULL,
     size_bytes       BIGINT NOT NULL,
     provider         TEXT NOT NULL,
-    root             TEXT NOT NULL,
+    symbol           TEXT NOT NULL,
     sample_date      TEXT NOT NULL,
     file_format      TEXT NOT NULL DEFAULT '',
     s3_key           TEXT,
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS published_artifacts (
     artifact_key  TEXT PRIMARY KEY,
     table_name    TEXT,
     provider      TEXT,
-    root          TEXT,
+    symbol        TEXT,
     sample_date   TEXT,
     interval      TEXT,
     committed_at  TEXT,
@@ -111,17 +111,17 @@ CREATE TABLE IF NOT EXISTS published_artifacts (
 """
 
 _CREATE_PUBLISHED_INDEX = (
-    "CREATE INDEX IF NOT EXISTS idx_published_artifacts_root_date "
-    "ON published_artifacts (table_name, root, sample_date)"
+    "CREATE INDEX IF NOT EXISTS idx_published_artifacts_symbol_date "
+    "ON published_artifacts (table_name, symbol, sample_date)"
 )
 
 _PUBLISHED_COLUMNS = (
-    "artifact_key, table_name, provider, root, sample_date, interval, "
+    "artifact_key, table_name, provider, symbol, sample_date, interval, "
     "committed_at, cached, cached_at, row_count, size_bytes, updated_at"
 )
 
 _COLUMNS = (
-    "path, table_name, sha256, size_bytes, provider, root, sample_date, "
+    "path, table_name, sha256, size_bytes, provider, symbol, sample_date, "
     "file_format, s3_key, status, error, discovered_at, committed_at, "
     "cache_key, cached_at, last_accessed_at, updated_at, "
     "rows_total, rows_degraded, quality_flags"
@@ -187,7 +187,7 @@ class Ledger:
         artifact_key: str,
         table_name: str | None = None,
         provider: str | None = None,
-        root: str | None = None,
+        symbol: str | None = None,
         sample_date: str | None = None,
         interval: str | None = None,
         committed_at: str | None = None,
@@ -200,13 +200,13 @@ class Ledger:
         now = self._now()
         self._execute(
             """\
-            INSERT INTO published_artifacts (artifact_key, table_name, provider, root, sample_date,
+            INSERT INTO published_artifacts (artifact_key, table_name, provider, symbol, sample_date,
                 interval, committed_at, cached, cached_at, row_count, size_bytes, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (artifact_key) DO UPDATE SET
                 table_name   = COALESCE(EXCLUDED.table_name, published_artifacts.table_name),
                 provider     = COALESCE(EXCLUDED.provider, published_artifacts.provider),
-                root         = COALESCE(EXCLUDED.root, published_artifacts.root),
+                symbol       = COALESCE(EXCLUDED.symbol, published_artifacts.symbol),
                 sample_date  = COALESCE(EXCLUDED.sample_date, published_artifacts.sample_date),
                 interval     = COALESCE(EXCLUDED.interval, published_artifacts.interval),
                 committed_at = COALESCE(EXCLUDED.committed_at, published_artifacts.committed_at),
@@ -220,7 +220,7 @@ class Ledger:
                 artifact_key,
                 table_name,
                 provider,
-                root,
+                symbol,
                 sample_date,
                 interval,
                 committed_at,
@@ -244,7 +244,7 @@ class Ledger:
             artifact_key=row[0],
             table_name=row[1],
             provider=row[2],
-            root=row[3],
+            symbol=row[3],
             sample_date=row[4],
             interval=row[5],
             committed_at=row[6],
@@ -281,7 +281,7 @@ class Ledger:
         sha256: str,
         size_bytes: int,
         provider: str,
-        root: str,
+        symbol: str,
         sample_date: str,
         file_format: str = "",
     ) -> None:
@@ -289,7 +289,7 @@ class Ledger:
         now = self._now()
         self._execute(
             """\
-            INSERT INTO catalog_files (path, table_name, sha256, size_bytes, provider, root,
+            INSERT INTO catalog_files (path, table_name, sha256, size_bytes, provider, symbol,
                                        sample_date, file_format, status, discovered_at, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
             ON CONFLICT (path, table_name) DO UPDATE SET
@@ -320,7 +320,7 @@ class Ledger:
                 sha256,
                 size_bytes,
                 provider,
-                root,
+                symbol,
                 sample_date,
                 file_format,
                 now,
@@ -422,7 +422,7 @@ class Ledger:
         table_name: str | None = None,
         older_than_days: int | None = None,
         provider: str | None = None,
-        root: str | None = None,
+        symbol: str | None = None,
     ) -> list[FileRecord]:
         """Return files that have cache entries, with optional filters."""
         where = "WHERE cache_key IS NOT NULL"
@@ -438,9 +438,9 @@ class Ledger:
         if provider:
             where += " AND provider = %s"
             params.append(provider)
-        if root:
-            where += " AND root = %s"
-            params.append(root)
+        if symbol:
+            where += " AND symbol = %s"
+            params.append(symbol)
 
         rows = self._fetchall(
             f"SELECT {_COLUMNS} FROM catalog_files {where} ORDER BY path",
