@@ -28,6 +28,21 @@ from tractatus.reader import DataReader
 load_dotenv()
 
 app = typer.Typer(no_args_is_help=True, help="Tractatus research tools.")
+
+
+@app.callback()
+def main(
+    env_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--env-file", help="Path to a .env file to load.", envvar="TRACTATUS_ENV_FILE"
+        ),
+    ] = None,
+) -> None:
+    if env_file is not None:
+        load_dotenv(dotenv_path=env_file, override=True)
+
+
 init_app = typer.Typer(no_args_is_help=True, help="Create a research project.")
 data_app = typer.Typer(no_args_is_help=True, help="Retrieve Tickrake data.")
 config_app = typer.Typer(no_args_is_help=True, help="Manage Tractatus configuration.")
