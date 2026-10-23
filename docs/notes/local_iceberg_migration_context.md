@@ -96,28 +96,46 @@ works correctly, then flip to AWS Glue + S3 when confident.
 This will be fixed after PR #29 merges (schema columns are now `symbol`, `sampled_at`/`sample_date`,
 `provider`, `option_root`, `underlying_symbol`).
 
-**TODO after PR #29 merges:**
-- Fix `_TABLE_GRAIN` to use correct column names
-- Re-test `tractatus catalog cache`
-
-### `option_root → underlying_symbol` mapping is incomplete
-Currently only covers index options: `SPXW→$SPX`, `NDXP→$NDX`, `RUTW→$RUT`, `XSP→$SPX`, `NANOS→$SPX`.
-Equity options fall back to using `option_root` directly as the underlying (correct for equities).
-**TODO:** audit all unique option roots in the dataset to validate no gaps.
-
 ---
 
-## Next Steps (in order)
+## Next Steps (in order, after PR #29 merges)
 
-1. **Commit PR #29** — all `make check` tests pass (133/133)
-2. **Run `tractatus catalog init-local`** — create `tractatus-iceberg` bucket + Iceberg tables in Postgres
-3. **Backfill Part A (Oct 19-22)** — reset ledger to `discovered`, re-publish via CSV pipeline with `--cache`
-4. **Backfill Part B (historical, up to Oct 16)** — write `scripts/backfill_local_lakehouse_from_cache.py`:
-   read MinIO cache parquets, add missing columns (`provider`, `option_root`, `underlying_symbol`),
-   publish to local Iceberg
-5. **Fix `_TABLE_GRAIN`** — rewrite to use correct schema column names
-6. **Validate** — spot checks, quality checks, `catalog cache` end-to-end
-7. **AWS transition (future)** — flip `catalog_type=glue`
+### Step 1: Run `tractatus catalog init-local`
+Creates the `tractatus-iceberg` MinIO bucket and all 6 Iceberg tables in PostgreSQL.
+Nothing can be published until this runs. Zero risk of touching AWS — `ICEBERG_CATALOG_TYPE=sql`
+in `.env` means `_iceberg_catalog()` never reaches Glue.
+
+### Step 2: Backfill Part A — Oct 19–22 (from CSVs)
+Reset ledger records for these dates back to `discovered`:
+```sql
+UPDATE catalog_files SET status = 'discovered', error = NULL, committed_at = NULL
+WHERE sample_date >= '2026-10-19' AND sample_date <= '2026-10-22' AND table_name = 'options';
+```
+Then re-publish via the normal pipeline:
+```
+tractatus catalog publish --table options --after 2026-10-19 --before 2026-10-23 --cache
+```
+These dates have CSVs in tickrake-staging and parquets already in `tractatus-lakehouse`.
+
+### Step 3: Backfill Part B — historical up to Oct 16 (from MinIO cache parquets)
+Write `scripts/backfill_local_lakehouse_from_cache.py`:
+- Walk `tractatus-lakehouse/options/schwab/YYYY/MM/DD/` parquet files
+- Read each, add missing columns: `provider` (from path), `option_root` (parse from `symbol`
+  column via `_parse_option_root`), `underlying_symbol` (via `_ROOT_TO_UNDERLYING`)
+- Publish to local Iceberg (`tractatus-iceberg`) via `table.append()`
+- Upsert `published_artifacts` for each file
+
+### Step 4: Fix `_TABLE_GRAIN` in publisher.py
+Rewrite to use correct schema column names (`symbol`, `sampled_at`/`sample_date`, `option_root`).
+Needed before `tractatus catalog cache` works.
+
+### Step 5: Validate
+- Spot check row counts per date, verify `option_root`/`underlying_symbol` correctness
+- Run `tractatus catalog cache` end-to-end
+- Quality checks
+
+### Step 6: AWS transition (future)
+Flip `ICEBERG_CATALOG_TYPE=glue` in production env, point warehouse at AWS S3.
 
 ---
 
