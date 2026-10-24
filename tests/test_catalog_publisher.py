@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -377,8 +377,11 @@ def test_cache_artifacts_writes_to_minio_and_upserts_ledger(
     normalized = pa.table(
         {
             "provider": pa.array(["schwab", "schwab"], type=pa.string()),
-            "root": pa.array(["SPX", "SPX"], type=pa.string()),
-            "sample_date": pa.array(["2026-06-25", "2026-06-25"], type=pa.string()),
+            "option_root": pa.array(["SPX", "SPX"], type=pa.string()),
+            "sampled_at": pa.array(
+                [datetime(2026, 6, 25, 14, 30, tzinfo=UTC)] * 2,
+                type=pa.timestamp("us", tz="UTC"),
+            ),
         }
     )
 
@@ -424,9 +427,10 @@ def test_cache_artifacts_failure_on_one_does_not_stop_others(
     normalized = pa.table(
         {
             "provider": pa.array(["schwab", "schwab", "schwab", "schwab"], type=pa.string()),
-            "root": pa.array(["SPX", "SPX", "AAPL", "AAPL"], type=pa.string()),
-            "sample_date": pa.array(
-                ["2026-06-25", "2026-06-25", "2026-06-25", "2026-06-25"], type=pa.string()
+            "option_root": pa.array(["SPX", "SPX", "AAPL", "AAPL"], type=pa.string()),
+            "sampled_at": pa.array(
+                [datetime(2026, 6, 25, 14, 30, tzinfo=UTC)] * 4,
+                type=pa.timestamp("us", tz="UTC"),
             ),
         }
     )

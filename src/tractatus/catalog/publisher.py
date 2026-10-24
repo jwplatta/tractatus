@@ -480,12 +480,15 @@ class Publisher:
     # Maps table_name → (date_column | None, grain_columns)
     # date_column: the Iceberg column used for --after/--before filtering (None if N/A)
     # grain_columns: PyArrow column names that define each artifact group
+    # grain_columns reference actual Iceberg schema column names.
+    # For tables with sampled_at, a derived "sample_date" (YYYY-MM-DD string) column
+    # is added from sampled_at before grouping — it is not a native schema column.
     _TABLE_GRAIN: dict[str, tuple[str | None, tuple[str, ...]]] = {
-        "options": ("sampled_at", ("provider", "root", "sample_date")),
-        "level_one_equities": ("sampled_at", ("provider", "root", "sample_date")),
-        "level_one_futures": ("sampled_at", ("provider", "root", "sample_date")),
-        "order_book": ("sampled_at", ("provider", "root", "sample_date")),
-        "candles": (None, ("provider", "interval", "root")),
+        "options": ("sampled_at", ("provider", "option_root", "sample_date")),
+        "level_one_equities": ("sampled_at", ("provider", "symbol", "sample_date")),
+        "level_one_futures": ("sampled_at", ("provider", "symbol", "sample_date")),
+        "order_book": ("sampled_at", ("provider", "symbol", "sample_date")),
+        "candles": (None, ("provider", "interval", "symbol")),
         "fundamentals": ("sampled_at", ("provider", "sample_date")),
     }
 
@@ -493,20 +496,21 @@ class Publisher:
     def _build_cache_key(table_name: str, group: dict[str, str | None]) -> str:
         """Construct the MinIO cache key for a given artifact group."""
         provider = group.get("provider") or "unknown"
-        root = group.get("root") or ""
+        # options groups by option_root; all other tables group by symbol
+        symbol = group.get("option_root") or group.get("symbol") or ""
         sample_date = group.get("sample_date") or ""
         interval = group.get("interval") or ""
 
         if table_name == "options":
             yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
-            return f"options/{provider}/{yyyy}/{mm}/{dd}/{root}_samples_{sample_date}.parquet"
+            return f"options/{provider}/{yyyy}/{mm}/{dd}/{symbol}_samples_{sample_date}.parquet"
 
         if table_name in ("level_one_equities", "level_one_futures", "order_book"):
             yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
-            return f"{table_name}/{provider}/{yyyy}/{mm}/{dd}/{root}.parquet"
+            return f"{table_name}/{provider}/{yyyy}/{mm}/{dd}/{symbol}.parquet"
 
         if table_name == "candles":
-            return f"candles/{provider}/{interval}/{root}.parquet"
+            return f"candles/{provider}/{interval}/{symbol}.parquet"
 
         if table_name == "fundamentals":
             yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
@@ -568,12 +572,22 @@ class Publisher:
                 arrow_table["provider"], value_set=pa.array(providers, type=pa.string())
             )
             arrow_table = arrow_table.filter(mask)
-        if roots and "root" in arrow_table.schema.names:
-            mask = pc.is_in(arrow_table["root"], value_set=pa.array(roots, type=pa.string()))
+        # options groups by option_root; other tables group by symbol
+        root_col = "option_root" if table_name == "options" else "symbol"
+        if roots and root_col in arrow_table.schema.names:
+            mask = pc.is_in(arrow_table[root_col], value_set=pa.array(roots, type=pa.string()))
             arrow_table = arrow_table.filter(mask)
         if interval and "interval" in arrow_table.schema.names:
             mask = pc.equal(arrow_table["interval"], interval)
             arrow_table = arrow_table.filter(mask)
+
+        # Derive sample_date (YYYY-MM-DD string) from sampled_at for grain grouping
+        if (
+            "sampled_at" in arrow_table.schema.names
+            and "sample_date" not in arrow_table.schema.names
+        ):
+            dates = pc.strftime(arrow_table["sampled_at"], format="%Y-%m-%d")
+            arrow_table = arrow_table.append_column("sample_date", dates)
 
         if arrow_table.num_rows == 0:
             logger.info({"event": "cache_artifacts_filtered_empty", "table": table_name})
@@ -617,7 +631,7 @@ class Publisher:
                     artifact_key=cache_key,
                     table_name=table_name,
                     provider=group_meta.get("provider"),
-                    symbol=group_meta.get("symbol"),
+                    symbol=group_meta.get("option_root") or group_meta.get("symbol"),
                     sample_date=sample_date_str,
                     interval=group_meta.get("interval"),
                     cached=True,
