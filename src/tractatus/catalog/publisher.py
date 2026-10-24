@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from pyiceberg.catalog import Catalog, load_catalog
+from tqdm import tqdm
 
 from tractatus.catalog.config import CatalogConfig
 from tractatus.catalog.discovery import data_dir_name, discover_files
@@ -551,114 +552,122 @@ class Publisher:
         full_name = f"{self._config.glue_database}.{table_name}"
         iceberg_table = catalog.load_table(full_name)
 
-        # Build PyIceberg row filter
-        filter_parts: list[str] = []
-        if date_col and after:
-            filter_parts.append(f"{date_col} >= '{after.isoformat()}T00:00:00+00:00'")
-        if date_col and before:
-            filter_parts.append(f"{date_col} < '{before.isoformat()}T00:00:00+00:00'")
-        row_filter: Any = " and ".join(filter_parts) if filter_parts else None
+        # For tables with a date column, iterate one day at a time to avoid loading
+        # the entire table into memory. For candles (no date_col), load all at once.
+        if date_col:
+            scan_start = after or date(2000, 1, 1)
+            scan_end = before or date(2100, 1, 1)
+            current = scan_start
+            dates_to_scan: list[date] = []
+            while current < scan_end:
+                dates_to_scan.append(current)
+                current = date.fromordinal(current.toordinal() + 1)
+        else:
+            dates_to_scan = [None]  # type: ignore[list-item]
 
-        scan = iceberg_table.scan(row_filter=row_filter) if row_filter else iceberg_table.scan()
-        arrow_table = scan.to_arrow()
-
-        if arrow_table.num_rows == 0:
-            logger.info({"event": "cache_artifacts_no_rows", "table": table_name})
-            return 0
-
-        # Apply provider / root / interval filters in Arrow (not pushed to Iceberg)
-        if providers and "provider" in arrow_table.schema.names:
-            mask = pc.is_in(
-                arrow_table["provider"], value_set=pa.array(providers, type=pa.string())
-            )
-            arrow_table = arrow_table.filter(mask)
-        # options groups by option_root; other tables group by symbol
         root_col = "option_root" if table_name == "options" else "symbol"
-        if roots and root_col in arrow_table.schema.names:
-            mask = pc.is_in(arrow_table[root_col], value_set=pa.array(roots, type=pa.string()))
-            arrow_table = arrow_table.filter(mask)
-        if interval and "interval" in arrow_table.schema.names:
-            mask = pc.equal(arrow_table["interval"], interval)
-            arrow_table = arrow_table.filter(mask)
-
-        # Derive sample_date (YYYY-MM-DD string) from sampled_at for grain grouping
-        if (
-            "sampled_at" in arrow_table.schema.names
-            and "sample_date" not in arrow_table.schema.names
-        ):
-            dates = pc.strftime(arrow_table["sampled_at"], format="%Y-%m-%d")
-            arrow_table = arrow_table.append_column("sample_date", dates)
-
-        if arrow_table.num_rows == 0:
-            logger.info({"event": "cache_artifacts_filtered_empty", "table": table_name})
-            return 0
-
-        # Group by grain columns, building unique groups via a dict keyed by grain tuple
-        present_grain_cols = [c for c in grain_cols if c in arrow_table.schema.names]
-        group_dict: dict[tuple[str, ...], list[int]] = {}
-        for i in range(arrow_table.num_rows):
-            key = tuple((arrow_table[c][i].as_py() or "") for c in present_grain_cols)
-            if key not in group_dict:
-                group_dict[key] = []
-            group_dict[key].append(i)
-
         cached_count = 0
-        for key_values, row_indices in group_dict.items():
-            group_meta: dict[str, str | None] = dict(
-                zip(present_grain_cols, key_values, strict=True)
-            )
-            # Fill in any grain cols not present in table
-            for col in grain_cols:
-                if col not in group_meta:
-                    group_meta[col] = None
 
-            indices_array = pa.array(row_indices, type=pa.int64())
-            group_table = arrow_table.take(indices_array)
-
-            try:
-                cache_key = self._build_cache_key(table_name, group_meta)
-                size_bytes = self._write_to_cache(group_table, cache_key, overwrite=overwrite)
-                if size_bytes is None and not overwrite:
-                    # Skipped — object already exists
-                    continue
-
-                # Normalize sample_date to YYYY-MM-DD
-                sample_date_str: str | None = group_meta.get("sample_date")
-                if sample_date_str and "T" in sample_date_str:
-                    sample_date_str = sample_date_str[:10]
-
-                self._ledger.upsert_published(
-                    artifact_key=cache_key,
-                    table_name=table_name,
-                    provider=group_meta.get("provider"),
-                    symbol=group_meta.get("option_root") or group_meta.get("symbol"),
-                    sample_date=sample_date_str,
-                    interval=group_meta.get("interval"),
-                    cached=True,
-                    cached_at=self._ledger._now(),
-                    row_count=group_table.num_rows,
-                    size_bytes=size_bytes,
+        for scan_date in tqdm(dates_to_scan, desc=f"cache {table_name}", unit="day"):
+            if scan_date is not None:
+                day_filter = (
+                    f"{date_col} >= '{scan_date.isoformat()}T00:00:00+00:00'"
+                    f" and {date_col} < '{date.fromordinal(scan_date.toordinal() + 1).isoformat()}T00:00:00+00:00'"
                 )
-                cached_count += 1
-                logger.info(
-                    {
-                        "event": "artifact_cached",
-                        "table": table_name,
-                        "cache_key": cache_key,
-                        "rows": group_table.num_rows,
-                        "size_bytes": size_bytes,
-                    }
+                arrow_table = iceberg_table.scan(row_filter=day_filter).to_arrow()
+            else:
+                arrow_table = iceberg_table.scan().to_arrow()
+
+            if arrow_table.num_rows == 0:
+                continue
+
+            # Apply in-Arrow filters
+            if providers and "provider" in arrow_table.schema.names:
+                mask = pc.is_in(
+                    arrow_table["provider"], value_set=pa.array(providers, type=pa.string())
                 )
-            except Exception as exc:
-                logger.error(
-                    {
-                        "event": "cache_artifact_error",
-                        "table": table_name,
-                        "group": group_meta,
-                        "error_class": type(exc).__name__,
-                        "error_message": str(exc),
-                    }
+                arrow_table = arrow_table.filter(mask)
+            if roots and root_col in arrow_table.schema.names:
+                mask = pc.is_in(arrow_table[root_col], value_set=pa.array(roots, type=pa.string()))
+                arrow_table = arrow_table.filter(mask)
+            if interval and "interval" in arrow_table.schema.names:
+                mask = pc.equal(arrow_table["interval"], interval)
+                arrow_table = arrow_table.filter(mask)
+
+            if arrow_table.num_rows == 0:
+                continue
+
+            # Derive sample_date (YYYY-MM-DD string) from sampled_at for grain grouping
+            if (
+                "sampled_at" in arrow_table.schema.names
+                and "sample_date" not in arrow_table.schema.names
+            ):
+                dates = pc.strftime(arrow_table["sampled_at"], format="%Y-%m-%d")
+                arrow_table = arrow_table.append_column("sample_date", dates)
+
+            # Group by grain columns
+            present_grain_cols = [c for c in grain_cols if c in arrow_table.schema.names]
+            group_dict: dict[tuple[str, ...], list[int]] = {}
+            for i in range(arrow_table.num_rows):
+                key = tuple((arrow_table[c][i].as_py() or "") for c in present_grain_cols)
+                if key not in group_dict:
+                    group_dict[key] = []
+                group_dict[key].append(i)
+
+            for key_values, row_indices in group_dict.items():
+                group_meta: dict[str, str | None] = dict(
+                    zip(present_grain_cols, key_values, strict=True)
                 )
+                for col in grain_cols:
+                    if col not in group_meta:
+                        group_meta[col] = None
+
+                indices_array = pa.array(row_indices, type=pa.int64())
+                group_table = arrow_table.take(indices_array)
+
+                try:
+                    cache_key = self._build_cache_key(table_name, group_meta)
+                    size_bytes = self._write_to_cache(group_table, cache_key, overwrite=overwrite)
+                    if size_bytes is None and not overwrite:
+                        continue
+
+                    # Normalize sample_date to YYYY-MM-DD
+                    sample_date_str: str | None = group_meta.get("sample_date")
+                    if sample_date_str and "T" in sample_date_str:
+                        sample_date_str = sample_date_str[:10]
+
+                    self._ledger.upsert_published(
+                        artifact_key=cache_key,
+                        table_name=table_name,
+                        provider=group_meta.get("provider"),
+                        symbol=group_meta.get("option_root") or group_meta.get("symbol"),
+                        sample_date=sample_date_str,
+                        interval=group_meta.get("interval"),
+                        cached=True,
+                        cached_at=self._ledger._now(),
+                        row_count=group_table.num_rows,
+                        size_bytes=size_bytes,
+                    )
+                    cached_count += 1
+                    logger.info(
+                        {
+                            "event": "artifact_cached",
+                            "table": table_name,
+                            "cache_key": cache_key,
+                            "rows": group_table.num_rows,
+                            "size_bytes": size_bytes,
+                        }
+                    )
+                except Exception as exc:
+                    logger.error(
+                        {
+                            "event": "cache_artifact_error",
+                            "table": table_name,
+                            "group": group_meta,
+                            "error_class": type(exc).__name__,
+                            "error_message": str(exc),
+                        }
+                    )
 
         logger.info(
             {

@@ -396,7 +396,11 @@ def test_cache_artifacts_writes_to_minio_and_upserts_ledger(
     mock_cache_client = MagicMock()
     publisher._cache_client = mock_cache_client
 
-    cached = publisher.cache_artifacts(table_name="options")
+    cached = publisher.cache_artifacts(
+        table_name="options",
+        after=date(2026, 6, 25),
+        before=date(2026, 6, 26),
+    )
     publisher.close()
 
     assert cached == 1
@@ -455,7 +459,11 @@ def test_cache_artifacts_failure_on_one_does_not_stop_others(
     mock_cache_client.put_object.side_effect = _put_object_side_effect
     publisher._cache_client = mock_cache_client
 
-    cached = publisher.cache_artifacts(table_name="options")
+    cached = publisher.cache_artifacts(
+        table_name="options",
+        after=date(2026, 6, 25),
+        before=date(2026, 6, 26),
+    )
     publisher.close()
 
     # 2 groups total; one fails, one succeeds
