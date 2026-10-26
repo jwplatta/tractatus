@@ -72,47 +72,6 @@ def load_artifacts(ledger_path: str) -> pd.DataFrame:
 
 st.set_page_config(page_title="Lakehouse Coverage", layout="wide")
 
-st.markdown(
-    """
-    <style>
-    /* Page background */
-    [data-testid="stAppViewContainer"] { background-color: #F9FAFB; }
-    [data-testid="stHeader"] { background-color: #F9FAFB; }
-
-    /* Main text */
-    html, body, [data-testid="stAppViewContainer"], .stMarkdown, p, li {
-        color: #111827;
-    }
-
-    /* Title and headers */
-    h1, h2, h3, h4 { color: #111827; }
-
-    /* Selectbox label */
-    label[data-testid="stWidgetLabel"] > div { color: #111827; }
-
-    /* Selectbox container — card surface */
-    [data-testid="stSelectbox"] > div:first-child {
-        background-color: #FFFFFF;
-        border: 1px solid #D1D5DB;
-        border-radius: 6px;
-    }
-
-    /* Selectbox selected value text */
-    [data-testid="stSelectbox"] span { color: #111827; }
-
-    /* Dataframe */
-    [data-testid="stDataFrame"] { border: 1px solid #D1D5DB; border-radius: 6px; }
-
-    /* Dividers */
-    hr { border-color: #D1D5DB; }
-
-    /* Links */
-    a { color: #1D4ED8; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 st.title("Lakehouse Coverage")
 
 if not LEDGER_PATH.exists():
