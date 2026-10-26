@@ -209,8 +209,8 @@ for (table_name, provider), grp in groups:
         [0.7499, "#FECACA"],
         [0.75,   "#F8FAFC"],  # z=0.5: future — near white
         [0.7999, "#F8FAFC"],
-        [0.8,    "#0d4f4a"],  # z=0.6: faint teal
-        [1.0,    "#2DD4BF"],  # z=1.0: bright teal
+        [0.8,    "#2DD4BF"],  # z=0.6: bright teal (fewer rows)
+        [1.0,    "#0d4f4a"],  # z=1.0: dark teal (more rows)
     ]
 
     fig = go.Figure(
