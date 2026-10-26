@@ -34,73 +34,51 @@ not a build-from-scratch one.
 
 ---
 
-## Open Questions / Bugs to Verify
+## Resolved Questions
 
-### 1. `sampled_at` vs `received_at` in `_TABLE_GRAIN`
+### 1. `sampled_at` vs `received_at` — naming is intentionally different, `_TABLE_GRAIN` was buggy
 
-In `publisher.py`, `_TABLE_GRAIN` maps `order_book` to `("sampled_at", ...)` as the date
-column used for Iceberg scan filtering in `cache_artifacts`. But the order_book schema has
-no `sampled_at` column — it has `received_at` and `book_time`.
+`sampled_at` and `received_at` are two distinct concepts and should stay named differently:
 
-**Check:** Confirm whether `cache_artifacts` actually uses this column name and whether it
-causes a silent failure or a hard error when caching order_book artifacts. The correct
-column is probably `received_at`.
+- **`sampled_at`** (options, level_one, fundamentals) — Schwab's event timestamp; when the
+  *market data event* was timestamped by the exchange/feed. For options this is the quote time.
+- **`received_at`** (order_book, level_one streaming) — local collector receipt time; when
+  Tickrake's process stamped the message on arrival. Tickrake's own code comments this
+  explicitly as the "safest cutoff" for queries but not a precise latency measurement.
 
-### 2. Normalizer contract vs live Tickrake NDJSON
+`_TABLE_GRAIN` in `publisher.py` incorrectly mapped `order_book` to `"sampled_at"`.
+**Fixed:** changed to `"received_at"` and updated `cache_artifacts` to derive `sample_date`
+from `date_col` (the `_TABLE_GRAIN` date column) rather than hardcoding `"sampled_at"`.
 
-The normalizer expects:
-- `received_at`, `symbol`, `service`, `book_time` as top-level string fields
-- `bids_json`, `asks_json` as JSON-encoded strings
-- `job_type`, `provider` as metadata fields (stripped before normalization)
+### 2. Normalizer contract matches live Tickrake output ✅
 
-**Check:** Pull a sample NDJSON file from the Tickrake staging MinIO bucket and confirm
-the field names match exactly. Tickrake may have evolved since the normalizer was written.
+Validated against a live example JSON from `tmp/example.json` and confirmed against
+`schwab_rb/lib/schwab_rb/stream/fields.rb` (BookBid, BookAsk, BookExchange constants):
 
-### 3. `sample_date` column population
+- Top-level fields match: `received_at`, `symbol`, `service`, `book_time`, `bids_json`, `asks_json`, `job_type`, `provider`
+- Numeric key mapping in nested arrays is correct:
+  - Bid/ask level: `"0"` = price, `"1"` = total_volume, `"2"` = num_bids/asks, `"3"` = venues array
+  - Venue: `"0"` = exchange name, `"1"` = volume, `"2"` = sequence_id
+- Tickrake writes raw Schwab payload directly to JSON without remapping keys — normalizer handles this correctly
 
-The normalizer adds `sample_date` as a date literal from the file path parameter. Confirm
-the publisher passes this correctly for order_book files (it should — the discovery parser
-extracts the date from the path).
+### 3. `sample_date` population ✅
+
+Discovery parser extracts date from `order_book/{provider}/{YYYY}/{MM}/{DD}/{symbol}.ndjson`
+path and passes it to the normalizer. Works correctly.
 
 ---
 
 ## Implementation Steps
 
-### Step 1: Verify `_TABLE_GRAIN` date column
+### Step 1: `_TABLE_GRAIN` fix ✅ DONE
 
-Read `publisher.py` `_TABLE_GRAIN` dict. If it says `sampled_at` for `order_book`, change
-it to `received_at`. Write a test or spot-check that `cache_artifacts --table order_book`
-doesn't error.
+Fixed in `publisher.py` — `order_book` now maps to `"received_at"`. Also fixed
+`cache_artifacts` to use `date_col` from `_TABLE_GRAIN` instead of hardcoding `"sampled_at"`
+so all tables derive `sample_date` correctly.
 
-### Step 2: Validate normalizer against live data
+### Step 2: Normalizer validated ✅ DONE
 
-Pull a sample file from tickrake-staging MinIO:
-
-```bash
-# List available order_book files
-mc ls local/tickrake-staging/order_book/schwab/ --recursive | head -20
-
-# Download one sample
-mc cp local/tickrake-staging/order_book/schwab/YYYY/MM/DD/SYMBOL.ndjson /tmp/sample_ob.ndjson
-```
-
-Run the normalizer manually against it in a Python REPL:
-
-```python
-import pyarrow as pa
-from tractatus.catalog.normalize.order_book import normalize_order_book
-
-with open("/tmp/sample_ob.ndjson") as f:
-    lines = [json.loads(l) for l in f]
-
-table = pa.Table.from_pylist(lines)
-result, diagnostics = normalize_order_book(table, provider="schwab", sample_date=date.today())
-print(result.schema)
-print(result.num_rows)
-```
-
-If field names don't match, update the normalizer (or add an alias layer) and add a fixture
-test with the actual live field names.
+Confirmed against live example and `schwab_rb` field constants. No changes needed.
 
 ### Step 3: End-to-end publish smoke test
 

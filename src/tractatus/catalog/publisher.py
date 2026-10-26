@@ -488,7 +488,7 @@ class Publisher:
         "options": ("sampled_at", ("provider", "option_root", "sample_date")),
         "level_one_equities": ("sampled_at", ("provider", "symbol", "sample_date")),
         "level_one_futures": ("sampled_at", ("provider", "symbol", "sample_date")),
-        "order_book": ("sampled_at", ("provider", "symbol", "sample_date")),
+        "order_book": ("received_at", ("provider", "symbol", "sample_date")),
         "candles": (None, ("provider", "interval", "symbol")),
         "fundamentals": ("sampled_at", ("provider", "sample_date")),
     }
@@ -597,24 +597,22 @@ class Publisher:
             if arrow_table.num_rows == 0:
                 continue
 
-            # Derive sample_date (YYYY-MM-DD string) from sampled_at for grain grouping
+            # Derive sample_date (YYYY-MM-DD string) from the table's date column for grain grouping
             if (
-                "sampled_at" in arrow_table.schema.names
+                date_col
+                and date_col in arrow_table.schema.names
                 and "sample_date" not in arrow_table.schema.names
             ):
-                dates = pc.strftime(arrow_table["sampled_at"], format="%Y-%m-%d")
+                dates = pc.strftime(arrow_table[date_col], format="%Y-%m-%d")
                 arrow_table = arrow_table.append_column("sample_date", dates)
 
-            # Group by grain columns
+            # Group by grain columns using pandas groupby (avoids O(n) Python row loop)
             present_grain_cols = [c for c in grain_cols if c in arrow_table.schema.names]
-            group_dict: dict[tuple[str, ...], list[int]] = {}
-            for i in range(arrow_table.num_rows):
-                key = tuple((arrow_table[c][i].as_py() or "") for c in present_grain_cols)
-                if key not in group_dict:
-                    group_dict[key] = []
-                group_dict[key].append(i)
+            pdf = arrow_table.to_pandas()
 
-            for key_values, row_indices in group_dict.items():
+            for key_values, group_df in pdf.groupby(present_grain_cols, sort=False):
+                if not isinstance(key_values, tuple):
+                    key_values = (key_values,)
                 group_meta: dict[str, str | None] = dict(
                     zip(present_grain_cols, key_values, strict=True)
                 )
@@ -622,8 +620,7 @@ class Publisher:
                     if col not in group_meta:
                         group_meta[col] = None
 
-                indices_array = pa.array(row_indices, type=pa.int64())
-                group_table = arrow_table.take(indices_array)
+                group_table = pa.Table.from_pandas(group_df, preserve_index=False)
 
                 try:
                     cache_key = self._build_cache_key(table_name, group_meta)
@@ -674,7 +671,6 @@ class Publisher:
                 "event": "cache_artifacts_completed",
                 "table": table_name,
                 "cached": cached_count,
-                "groups": len(group_dict),
             }
         )
         return cached_count
