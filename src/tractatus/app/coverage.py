@@ -98,7 +98,8 @@ sel_table = col1.selectbox("Table", all_tables, index=default_table_idx)
 # Provider options depend on selected table
 df_for_provider = df_all[df_all["table_name"] == sel_table]
 all_providers = sorted(df_for_provider["provider"].dropna().unique().tolist())
-sel_provider = col2.selectbox("Provider", [_ALL] + all_providers)
+default_provider_idx = (all_providers.index("schwab") + 1) if "schwab" in all_providers else 0
+sel_provider = col2.selectbox("Provider", [_ALL] + all_providers, index=default_provider_idx)
 
 # Symbol options depend on both selections
 df_for_symbol = df_for_provider if sel_provider == _ALL else df_for_provider[df_for_provider["provider"] == sel_provider]
