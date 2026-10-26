@@ -27,4 +27,8 @@ uv run tractatus catalog publish \
   --before "$NEXT_DATE" \
   --cache
 
+echo "==> Expiring old Iceberg snapshots for order_book..."
+uv run tractatus catalog expire-snapshots \
+  --table order_book
+
 echo "==> Done: $DATE"

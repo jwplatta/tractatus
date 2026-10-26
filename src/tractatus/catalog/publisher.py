@@ -8,7 +8,7 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -674,6 +674,28 @@ class Publisher:
             }
         )
         return cached_count
+
+    def expire_snapshots(self, table_name: str) -> int:
+        """Expire all snapshots older than now for the given table.
+
+        Returns the number of snapshots expired.
+        """
+        catalog = self._iceberg_catalog()
+        full_name = f"{self._config.glue_database}.{table_name}"
+        iceberg_table = catalog.load_table(full_name)
+        before_count = len(iceberg_table.history())
+        iceberg_table.maintenance.expire_snapshots().older_than(dt=datetime.now(tz=UTC)).commit()
+        iceberg_table = catalog.load_table(full_name)
+        after_count = len(iceberg_table.history())
+        expired = before_count - after_count
+        logger.info(
+            "expire_snapshots table=%s before=%d after=%d expired=%d",
+            table_name,
+            before_count,
+            after_count,
+            expired,
+        )
+        return expired
 
     def _iceberg_catalog(self) -> Catalog:
         """Load PyIceberg catalog — SQL (local) or Glue (AWS) based on config."""

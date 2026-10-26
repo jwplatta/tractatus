@@ -625,6 +625,25 @@ def catalog_init_local() -> None:
         typer.echo(f"{full_name} — {len(table.schema().fields)} fields")
 
 
+@catalog_app.command("expire-snapshots")
+def catalog_expire_snapshots(
+    table: Annotated[str, typer.Option("--table", help="Iceberg table to expire snapshots for.")],
+) -> None:
+    """Expire all Iceberg snapshots older than now for a table.
+
+    Run this after bulk publishes to keep snapshot history small and scans fast.
+    """
+    setup_logging("catalog", verbose=True)
+    config = CatalogConfig.load()
+    publisher = Publisher(config)
+    try:
+        expired = publisher.expire_snapshots(table)
+    finally:
+        publisher.close()
+    typer.echo(f"Table:    {table}")
+    typer.echo(f"Expired:  {expired} snapshot(s)")
+
+
 @catalog_app.command("purge")
 def catalog_purge(
     table: Annotated[str, typer.Option("--table", help="Iceberg table to purge.")],
