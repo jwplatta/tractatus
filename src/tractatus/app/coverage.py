@@ -72,6 +72,66 @@ def load_artifacts(ledger_path: str) -> pd.DataFrame:
 
 st.set_page_config(page_title="Lakehouse Coverage", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    /* ---- Light mode ---- */
+    @media (prefers-color-scheme: light) {
+        :root {
+            --bg-page:    #F9FAFB;
+            --bg-card:    #FFFFFF;
+            --blue:       #1D4ED8;
+            --teal:       #0D9488;
+            --text-main:  #111827;
+            --text-sec:   #4B5563;
+            --border:     #D1D5DB;
+            --btn-text:   #FFFFFF;
+        }
+    }
+    /* ---- Dark mode ---- */
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg-page:    #0B1220;
+            --bg-card:    #111827;
+            --blue:       #60A5FA;
+            --teal:       #2DD4BF;
+            --text-main:  #F9FAFB;
+            --text-sec:   #9CA3AF;
+            --border:     #374151;
+            --btn-text:   #0B1220;
+        }
+    }
+
+    [data-testid="stAppViewContainer"],
+    [data-testid="stAppViewBlockContainer"] { background-color: var(--bg-page) !important; }
+    [data-testid="stHeader"]               { background-color: var(--bg-page) !important; }
+
+    /* Text */
+    html, body, p, li, span, label,
+    [data-testid="stMarkdownContainer"]    { color: var(--text-main) !important; }
+    h1, h2, h3, h4                         { color: var(--text-main) !important; }
+
+    /* Selectbox */
+    [data-testid="stSelectbox"] > div { background-color: var(--bg-card) !important; border: 1px solid var(--border) !important; }
+    [data-testid="stSelectbox"] span  { color: var(--text-main) !important; }
+
+    /* Widget labels */
+    [data-testid="stWidgetLabel"] p { color: var(--text-sec) !important; }
+
+    /* Buttons */
+    [data-testid="stButton"] > button {
+        background-color: var(--blue) !important;
+        color: var(--btn-text) !important;
+        border: none !important;
+    }
+
+    /* Dataframe */
+    [data-testid="stDataFrame"] { border: 1px solid var(--border) !important; border-radius: 6px; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("Lakehouse Coverage")
 
 if not LEDGER_PATH.exists():
@@ -99,18 +159,16 @@ sel_table = col1.selectbox("Table", all_tables, index=default_table_idx)
 # Provider options depend on selected table
 df_for_provider = df_all[df_all["table_name"] == sel_table]
 all_providers = sorted(df_for_provider["provider"].dropna().unique().tolist())
-default_provider_idx = (all_providers.index("schwab") + 1) if "schwab" in all_providers else 0
-sel_provider = col2.selectbox("Provider", [_ALL] + all_providers, index=default_provider_idx)
+default_provider_idx = all_providers.index("schwab") if "schwab" in all_providers else 0
+sel_provider = col2.selectbox("Provider", all_providers, index=default_provider_idx)
 
 # Symbol options depend on both selections
-df_for_symbol = df_for_provider if sel_provider == _ALL else df_for_provider[df_for_provider["provider"] == sel_provider]
+df_for_symbol = df_for_provider[df_for_provider["provider"] == sel_provider]
 all_symbols = sorted(df_for_symbol["symbol"].dropna().unique().tolist())
 sel_symbol = col3.selectbox("Symbol", [_ALL] + all_symbols)
 
 # Apply filters
-df = df_all[df_all["table_name"] == sel_table].copy()
-if sel_provider != _ALL:
-    df = df[df["provider"] == sel_provider]
+df = df_all[(df_all["table_name"] == sel_table) & (df_all["provider"] == sel_provider)].copy()
 if sel_symbol != _ALL:
     df = df[df["symbol"] == sel_symbol]
 
@@ -221,9 +279,8 @@ for (table_name, provider), grp in groups:
         yaxis_title="Month",
         height=max(300, len(all_months) * 25 + 100),
         margin={"t": 20, "b": 40},
-        paper_bgcolor="#F9FAFB",
-        plot_bgcolor="#F9FAFB",
-        font={"color": "#111827"},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     st.plotly_chart(fig, use_container_width=True, key=f"heatmap_{table_name}_{provider}")
 
