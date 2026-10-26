@@ -113,7 +113,11 @@ if sel_symbol != _ALL:
     df = df[df["symbol"] == sel_symbol]
 
 if df.empty:
-    st.info(f"No data found for {sel_table} / {sel_provider}" + (f" / {sel_symbol}" if sel_symbol != _ALL else "") + ".")
+    st.info(
+        f"No data found for {sel_table} / {sel_provider}"
+        + (f" / {sel_symbol}" if sel_symbol != _ALL else "")
+        + "."
+    )
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -203,14 +207,14 @@ for (table_name, provider), grp in groups:
     # Colorscale positions = (z + 1) / 2  (zmin=-1, zmax=1)
     # z=-1 → 0.0, z=0 → 0.5, z=0.5 → 0.75, z=0.6 → 0.8, z=1.0 → 1.0
     colorscale = [
-        [0.0,    "#6B7280"],  # z=-1: weekend gray
+        [0.0, "#6B7280"],  # z=-1: weekend gray
         [0.4999, "#6B7280"],
-        [0.5,    "#FECACA"],  # z=0: no data — light red
+        [0.5, "#FECACA"],  # z=0: no data — light red
         [0.7499, "#FECACA"],
-        [0.75,   "#F8FAFC"],  # z=0.5: future — near white
+        [0.75, "#F8FAFC"],  # z=0.5: future — near white
         [0.7999, "#F8FAFC"],
-        [0.8,    "#2DD4BF"],  # z=0.6: bright teal (fewer rows)
-        [1.0,    "#0d4f4a"],  # z=1.0: dark teal (more rows)
+        [0.8, "#2DD4BF"],  # z=0.6: bright teal (fewer rows)
+        [1.0, "#0d4f4a"],  # z=1.0: dark teal (more rows)
     ]
 
     fig = go.Figure(
@@ -247,9 +251,7 @@ st.header("Summary")
 
 def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for (symbol, table_name, provider), grp in df.groupby(
-        ["symbol", "table_name", "provider"]
-    ):
+    for (symbol, table_name, provider), grp in df.groupby(["symbol", "table_name", "provider"]):
         dates = grp["sample_date"].dropna().drop_duplicates().sort_values()
         if dates.empty:
             continue
@@ -274,7 +276,19 @@ def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     if not rows:
-        return pd.DataFrame(columns=["table_name", "provider", "symbol", "first_date", "last_date", "total_days", "cached_days", "pct_cached", "gaps"])
+        return pd.DataFrame(
+            columns=[
+                "table_name",
+                "provider",
+                "symbol",
+                "first_date",
+                "last_date",
+                "total_days",
+                "cached_days",
+                "pct_cached",
+                "gaps",
+            ]
+        )
     return pd.DataFrame(rows).sort_values("symbol").reset_index(drop=True)
 
 

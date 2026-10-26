@@ -70,6 +70,14 @@ ignore_missing_imports = true
 module = "pyiceberg.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "plotly.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "streamlit.*"
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
