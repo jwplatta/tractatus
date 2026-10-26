@@ -190,12 +190,13 @@ for (table_name, provider), grp in groups:
         z_vals.append(z_row)
         hover_text.append(h_row)
 
-    # z=-1: weekend(gray), z=0: no data(dark card), z=0.1–1.0: teal gradient
+    # z=-1: weekend(gray), z=0: no data(muted), z=0.1–1.0: teal gradient
+    # Colors chosen to work on both light (#F9FAFB) and dark (#0B1220) backgrounds
     colorscale = [
-        [0.0,    "#374151"],  # z=-1: weekend — dark border gray
-        [0.4999, "#374151"],
-        [0.5,    "#111827"],  # z=0: no data — dark card surface
-        [0.5001, "#0d4f4a"],  # z~0.1: faint dark teal
+        [0.0,    "#6B7280"],  # z=-1: weekend — mid gray readable on both
+        [0.4999, "#6B7280"],
+        [0.5,    "#374151"],  # z=0: no data — dark muted slate
+        [0.5001, "#0d4f4a"],  # z~0.1: faint teal
         [1.0,    "#2DD4BF"],  # z=1.0: bright teal accent
     ]
 
