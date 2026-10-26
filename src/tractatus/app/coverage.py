@@ -47,7 +47,7 @@ SELECT
     table_name,
     provider,
     symbol,
-    date(partition_date) AS partition_date,
+    date(sample_date) AS sample_date,
     cached
 FROM published_artifacts
 """
@@ -60,7 +60,7 @@ def load_artifacts(ledger_path: str) -> pd.DataFrame:
         df = pd.read_sql_query(_QUERY, con)
     finally:
         con.close()
-    df["partition_date"] = pd.to_datetime(df["partition_date"])
+    df["sample_date"] = pd.to_datetime(df["sample_date"])
     return df
 
 
@@ -120,8 +120,8 @@ for (table_name, provider), grp in groups:
     st.subheader(f"{table_name} — {provider}")
 
     grp = grp.copy()
-    grp["year_month"] = grp["partition_date"].dt.to_period("M").astype(str)
-    grp["day"] = grp["partition_date"].dt.day
+    grp["year_month"] = grp["sample_date"].dt.to_period("M").astype(str)
+    grp["day"] = grp["sample_date"].dt.day
 
     # Aggregate: prefer cached=1 over cached=0 when multiple symbols on same day
     agg = (
@@ -184,11 +184,11 @@ def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     for (symbol, table_name, provider), grp in df.groupby(
         ["symbol", "table_name", "provider"]
     ):
-        dates = grp["partition_date"].drop_duplicates().sort_values()
+        dates = grp["sample_date"].drop_duplicates().sort_values()
         first = dates.min()
         last = dates.max()
         total = len(dates)
-        cached = int(grp.groupby("partition_date")["cached"].max().sum())
+        cached = int(grp.groupby("sample_date")["cached"].max().sum())
 
         bdays = pd.bdate_range(first, last)
         gap_count = max(0, len(bdays) - total)
