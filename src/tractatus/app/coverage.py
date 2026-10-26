@@ -164,7 +164,13 @@ for (table_name, provider), grp in groups:
                 continue
 
             is_weekend = actual_date.dayofweek >= 5
+            is_future = actual_date > pd.Timestamp.now()
             date_str = actual_date.strftime("%Y-%m-%d")
+
+            if is_future:
+                z_row.append(np.nan)
+                h_row.append("")
+                continue
 
             if is_weekend:
                 z_row.append(-1.0)
