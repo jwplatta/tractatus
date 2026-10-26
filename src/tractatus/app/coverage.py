@@ -31,7 +31,6 @@ def _resolve_ledger_path() -> Path:
                 "sqlite:/// URL or leave it unset."
             )
             st.stop()
-    # Check for CLI arg (passed after --): streamlit run coverage.py -- /path/to/ledger.db
     if len(sys.argv) > 1:
         return Path(sys.argv[1])
     return _DEFAULT_LEDGER
@@ -49,7 +48,8 @@ SELECT
     provider,
     symbol,
     date(sample_date) AS sample_date,
-    cached
+    cached,
+    row_count
 FROM published_artifacts
 """
 
@@ -84,27 +84,34 @@ if df_all.empty:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Sidebar filters
+# Filters — inline dropdowns
 # ---------------------------------------------------------------------------
 
-st.sidebar.header("Filters")
+_ALL = "All"
 
-all_tables = sorted(df_all["table_name"].unique().tolist())
-sel_tables = st.sidebar.multiselect("table_name", all_tables, default=all_tables)
+col1, col2, col3 = st.columns(3)
 
-all_providers = sorted(df_all["provider"].unique().tolist())
-sel_providers = st.sidebar.multiselect("provider", all_providers, default=all_providers)
+all_tables = sorted(df_all["table_name"].dropna().unique().tolist())
+sel_table = col1.selectbox("Table", [_ALL] + all_tables)
 
-symbol_filter = st.sidebar.text_input("symbol (contains)", "")
+# Provider options depend on selected table
+df_for_provider = df_all if sel_table == _ALL else df_all[df_all["table_name"] == sel_table]
+all_providers = sorted(df_for_provider["provider"].dropna().unique().tolist())
+sel_provider = col2.selectbox("Provider", [_ALL] + all_providers)
+
+# Symbol options depend on both selections
+df_for_symbol = df_for_provider if sel_provider == _ALL else df_for_provider[df_for_provider["provider"] == sel_provider]
+all_symbols = sorted(df_for_symbol["symbol"].dropna().unique().tolist())
+sel_symbol = col3.selectbox("Symbol", [_ALL] + all_symbols)
 
 # Apply filters
 df = df_all.copy()
-if sel_tables:
-    df = df[df["table_name"].isin(sel_tables)]
-if sel_providers:
-    df = df[df["provider"].isin(sel_providers)]
-if symbol_filter:
-    df = df[df["symbol"].str.contains(symbol_filter, case=False, na=False)]
+if sel_table != _ALL:
+    df = df[df["table_name"] == sel_table]
+if sel_provider != _ALL:
+    df = df[df["provider"] == sel_provider]
+if sel_symbol != _ALL:
+    df = df[df["symbol"] == sel_symbol]
 
 if df.empty:
     st.info("No data matches the current filters.")
@@ -113,8 +120,6 @@ if df.empty:
 # ---------------------------------------------------------------------------
 # Calendar heatmap — one per (table_name, provider)
 # ---------------------------------------------------------------------------
-
-st.header("Calendar Heatmap")
 
 groups = df.groupby(["table_name", "provider"])
 
@@ -125,21 +130,27 @@ for (table_name, provider), grp in groups:
     grp["year_month"] = grp["sample_date"].dt.to_period("M").astype(str)
     grp["day"] = grp["sample_date"].dt.day
 
-    # Aggregate: prefer cached=1 over cached=0 when multiple symbols on same day
+    # Aggregate per (year_month, day): max cached, sum row_count
     agg = (
-        grp.groupby(["year_month", "day"])["cached"]
-        .max()
+        grp.groupby(["year_month", "day"])
+        .agg(cached=("cached", "max"), row_count=("row_count", "sum"))
         .reset_index()
     )
+
+    # Determine if row_count is meaningful for this table
+    has_row_count = agg["row_count"].notna().any() and agg["row_count"].sum() > 0
+    max_row_count = float(agg["row_count"].max()) if has_row_count else 1.0
 
     all_months = sorted(agg["year_month"].unique())
     all_days = list(range(1, 32))
 
-    # Build z matrix: rows=months, cols=days
-    pivot = agg.pivot(index="year_month", columns="day", values="cached")
-    pivot = pivot.reindex(index=all_months, columns=all_days)
+    pivot_cached = agg.pivot(index="year_month", columns="day", values="cached").reindex(
+        index=all_months, columns=all_days
+    )
+    pivot_rc = agg.pivot(index="year_month", columns="day", values="row_count").reindex(
+        index=all_months, columns=all_days
+    )
 
-    # Build parallel matrices for z values and hover text
     z_vals = []
     hover_text = []
     for ym in all_months:
@@ -149,39 +160,44 @@ for (table_name, provider), grp in groups:
             try:
                 actual_date = pd.Timestamp(f"{ym}-{d:02d}")
             except ValueError:
-                # Day doesn't exist in this month (e.g. Feb 30)
                 z_row.append(np.nan)
                 h_row.append("")
                 continue
+
             is_weekend = actual_date.dayofweek >= 5
             date_str = actual_date.strftime("%Y-%m-%d")
+
             if is_weekend:
-                z_row.append(-1)
+                z_row.append(-1.0)
                 h_row.append(f"{date_str} (weekend)")
+                continue
+
+            cached_val = pivot_cached.loc[ym, d] if ym in pivot_cached.index else np.nan
+            rc_val = pivot_rc.loc[ym, d] if ym in pivot_rc.index else np.nan
+
+            if pd.isna(cached_val):
+                z_row.append(0.0)
+                h_row.append(f"{date_str}: no data")
             else:
-                cached_val = pivot.loc[ym, d] if ym in pivot.index and d in pivot.columns else np.nan
-                if pd.isna(cached_val):
-                    z_row.append(0)
-                    h_row.append(f"{date_str}: no data")
-                elif cached_val == 1:
-                    z_row.append(2)
-                    h_row.append(f"{date_str}: cached")
+                if has_row_count and not pd.isna(rc_val) and max_row_count > 0:
+                    # Scale row_count to (0.1, 1.0) so even low-count days are visible
+                    intensity = 0.1 + 0.9 * (float(rc_val) / max_row_count)
                 else:
-                    z_row.append(1)
-                    h_row.append(f"{date_str}: in lakehouse")
+                    intensity = 1.0
+                z_row.append(intensity)
+                status = "cached" if cached_val == 1 else "in lakehouse"
+                rc_str = f", {int(rc_val):,} rows" if has_row_count and not pd.isna(rc_val) else ""
+                h_row.append(f"{date_str}: {status}{rc_str}")
         z_vals.append(z_row)
         hover_text.append(h_row)
 
-    # -1=weekend(gray), 0=no data(white), 1=lakehouse(blue), 2=cached(green)
+    # z=-1: weekend(gray), z=0: no data(white), z=0.1–1.0: green gradient
     colorscale = [
-        [0.0,   "#d0d0d0"],  # weekend
-        [0.25,  "#d0d0d0"],
-        [0.251, "#ffffff"],  # no data
-        [0.5,   "#ffffff"],
-        [0.501, "#3498db"],  # in lakehouse
-        [0.75,  "#3498db"],
-        [0.751, "#2ecc71"],  # cached
-        [1.0,   "#2ecc71"],
+        [0.0,    "#d0d0d0"],  # z=-1: weekend gray
+        [0.4999, "#d0d0d0"],
+        [0.5,    "#ffffff"],  # z=0: no data white
+        [0.5001, "#c8f5c8"],  # z=0.1: faint green
+        [1.0,    "#1a7a35"],  # z=1.0: rich dark green
     ]
 
     fig = go.Figure(
@@ -190,9 +206,11 @@ for (table_name, provider), grp in groups:
             x=[str(d) for d in all_days],
             y=all_months,
             colorscale=colorscale,
-            zmin=-1,
-            zmax=2,
+            zmin=-1.0,
+            zmax=1.0,
             showscale=False,
+            xgap=2,
+            ygap=2,
             hovertemplate="%{customdata}<extra></extra>",
             customdata=hover_text,
         )
@@ -224,11 +242,9 @@ def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
         last = dates.max()
         total = len(dates)
         cached = int(grp.groupby("sample_date")["cached"].max().sum())
-
         bdays = pd.bdate_range(first, last)
         gap_count = max(0, len(bdays) - total)
         pct_cached = round(100.0 * cached / total, 1) if total else 0.0
-
         rows.append(
             {
                 "table_name": table_name,
@@ -246,5 +262,4 @@ def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 summary = _compute_summary(df)
-
 st.dataframe(summary, use_container_width=True)
