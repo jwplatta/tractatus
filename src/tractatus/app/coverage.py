@@ -92,10 +92,11 @@ _ALL = "All"
 col1, col2, col3 = st.columns(3)
 
 all_tables = sorted(df_all["table_name"].dropna().unique().tolist())
-sel_table = col1.selectbox("Table", [_ALL] + all_tables)
+default_table_idx = all_tables.index("options") if "options" in all_tables else 0
+sel_table = col1.selectbox("Table", all_tables, index=default_table_idx)
 
 # Provider options depend on selected table
-df_for_provider = df_all if sel_table == _ALL else df_all[df_all["table_name"] == sel_table]
+df_for_provider = df_all[df_all["table_name"] == sel_table]
 all_providers = sorted(df_for_provider["provider"].dropna().unique().tolist())
 sel_provider = col2.selectbox("Provider", [_ALL] + all_providers)
 
@@ -105,9 +106,7 @@ all_symbols = sorted(df_for_symbol["symbol"].dropna().unique().tolist())
 sel_symbol = col3.selectbox("Symbol", [_ALL] + all_symbols)
 
 # Apply filters
-df = df_all.copy()
-if sel_table != _ALL:
-    df = df[df["table_name"] == sel_table]
+df = df_all[df_all["table_name"] == sel_table].copy()
 if sel_provider != _ALL:
     df = df[df["provider"] == sel_provider]
 if sel_symbol != _ALL:
