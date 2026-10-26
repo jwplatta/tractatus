@@ -61,6 +61,7 @@ def load_artifacts(ledger_path: str) -> pd.DataFrame:
     finally:
         con.close()
     df["sample_date"] = pd.to_datetime(df["sample_date"])
+    df = df.dropna(subset=["sample_date"])
     return df
 
 
@@ -184,7 +185,9 @@ def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     for (symbol, table_name, provider), grp in df.groupby(
         ["symbol", "table_name", "provider"]
     ):
-        dates = grp["sample_date"].drop_duplicates().sort_values()
+        dates = grp["sample_date"].dropna().drop_duplicates().sort_values()
+        if dates.empty:
+            continue
         first = dates.min()
         last = dates.max()
         total = len(dates)
