@@ -168,11 +168,13 @@ for (table_name, provider), grp in groups:
             date_str = actual_date.strftime("%Y-%m-%d")
 
             if is_future:
-                z_row.append(np.nan)
-                h_row.append("")
+                # z=0.5: future — renders white/blank
+                z_row.append(0.5)
+                h_row.append(f"{date_str} (future)")
                 continue
 
             if is_weekend:
+                # z=-1: weekend — gray
                 z_row.append(-1.0)
                 h_row.append(f"{date_str} (weekend)")
                 continue
@@ -181,12 +183,12 @@ for (table_name, provider), grp in groups:
             rc_val = pivot_rc.loc[ym, d] if ym in pivot_rc.index else np.nan
 
             if pd.isna(cached_val):
+                # z=0: past weekday, no data — light red
                 z_row.append(0.0)
                 h_row.append(f"{date_str}: no data")
             else:
                 if has_row_count and not pd.isna(rc_val) and max_row_count > 0:
-                    # Scale row_count to (0.1, 1.0) so even low-count days are visible
-                    intensity = 0.1 + 0.9 * (float(rc_val) / max_row_count)
+                    intensity = 0.6 + 0.4 * (float(rc_val) / max_row_count)
                 else:
                     intensity = 1.0
                 z_row.append(intensity)
@@ -196,14 +198,17 @@ for (table_name, provider), grp in groups:
         z_vals.append(z_row)
         hover_text.append(h_row)
 
-    # z=-1: weekend(gray), z=0: no data(muted), z=0.1–1.0: teal gradient
-    # Colors chosen to work on both light (#F9FAFB) and dark (#0B1220) backgrounds
+    # z=-1: weekend(gray), z=0: no data(light red), z=0.5: future(blank),
+    # z=0.6–1.0: teal gradient for data
     colorscale = [
-        [0.0,    "#6B7280"],  # z=-1: weekend — mid gray readable on both
-        [0.4999, "#6B7280"],
-        [0.5,    "#374151"],  # z=0: no data — dark muted slate
-        [0.5001, "#0d4f4a"],  # z~0.1: faint teal
-        [1.0,    "#2DD4BF"],  # z=1.0: bright teal accent
+        [0.0,    "#6B7280"],  # z=-1: weekend gray
+        [0.2,    "#6B7280"],
+        [0.201,  "#FECACA"],  # z=0: no data — light red
+        [0.35,   "#FECACA"],
+        [0.351,  "#F8FAFC"],  # z=0.5: future — near white/blank
+        [0.55,   "#F8FAFC"],
+        [0.551,  "#0d4f4a"],  # z=0.6: faint teal
+        [1.0,    "#2DD4BF"],  # z=1.0: bright teal
     ]
 
     fig = go.Figure(
