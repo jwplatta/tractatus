@@ -36,19 +36,26 @@ not a build-from-scratch one.
 
 ## Resolved Questions
 
-### 1. `sampled_at` vs `received_at` — naming is intentionally different, `_TABLE_GRAIN` was buggy
+### 1. `sampled_at` vs `received_at` — intentionally different names, `_TABLE_GRAIN` was buggy
 
-`sampled_at` and `received_at` are two distinct concepts and should stay named differently:
+The ingestion-time column is named differently across table types by design:
 
-- **`sampled_at`** (options, level_one, fundamentals) — Schwab's event timestamp; when the
-  *market data event* was timestamped by the exchange/feed. For options this is the quote time.
-- **`received_at`** (order_book, level_one streaming) — local collector receipt time; when
-  Tickrake's process stamped the message on arrival. Tickrake's own code comments this
-  explicitly as the "safest cutoff" for queries but not a precise latency measurement.
+- **`sampled_at`** (options, fundamentals, candles) — when the *sample* was taken: Schwab's
+  feed time or batch fetch time. The data was pulled/fetched at this moment.
+- **`received_at`** (order_book, level_one) — when Tickrake's streaming collector *received*
+  the event off the Schwab WebSocket. Stamped by `Time.now.utc` in Tickrake — it is a
+  Tickrake concept, not a Schwab field. The Schwab feed does not provide this timestamp.
+
+Both answer "when did our system have this data?" for backtest alignment, named accurately
+for their context. A backtest joining across tables uses whichever column is present.
 
 `_TABLE_GRAIN` in `publisher.py` incorrectly mapped `order_book` to `"sampled_at"`.
 **Fixed:** changed to `"received_at"` and updated `cache_artifacts` to derive `sample_date`
 from `date_col` (the `_TABLE_GRAIN` date column) rather than hardcoding `"sampled_at"`.
+
+Decision: keep `received_at` as the canonical column name in the Iceberg schema for
+order_book and level_one. It is more accurate than `sampled_at` for streaming data where
+Tickrake stamps receipt time itself. No schema changes needed.
 
 ### 2. Normalizer contract matches live Tickrake output ✅
 
