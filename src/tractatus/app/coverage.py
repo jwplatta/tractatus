@@ -113,7 +113,7 @@ if sel_symbol != _ALL:
     df = df[df["symbol"] == sel_symbol]
 
 if df.empty:
-    st.info("No data matches the current filters.")
+    st.info(f"No data found for {sel_table} / {sel_provider}" + (f" / {sel_symbol}" if sel_symbol != _ALL else "") + ".")
     st.stop()
 
 # ---------------------------------------------------------------------------
