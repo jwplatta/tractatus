@@ -247,10 +247,4 @@ def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 summary = _compute_summary(df)
 
-def _highlight_gaps(row: pd.Series) -> list[str]:
-    color = "background-color: #ffe0e0" if row["gaps"] > 0 else ""
-    return [color] * len(row)
-
-
-styled = summary.style.apply(_highlight_gaps, axis=1)
-st.dataframe(styled, use_container_width=True)
+st.dataframe(summary, use_container_width=True)
