@@ -170,7 +170,7 @@ for (table_name, provider), grp in groups:
         height=max(300, len(all_months) * 25 + 100),
         margin={"t": 20, "b": 40},
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"heatmap_{table_name}_{provider}")
 
 # ---------------------------------------------------------------------------
 # Summary table
