@@ -71,6 +71,48 @@ def load_artifacts(ledger_path: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="Lakehouse Coverage", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    /* Page background */
+    [data-testid="stAppViewContainer"] { background-color: #F9FAFB; }
+    [data-testid="stHeader"] { background-color: #F9FAFB; }
+
+    /* Main text */
+    html, body, [data-testid="stAppViewContainer"], .stMarkdown, p, li {
+        color: #111827;
+    }
+
+    /* Title and headers */
+    h1, h2, h3, h4 { color: #111827; }
+
+    /* Selectbox label */
+    label[data-testid="stWidgetLabel"] > div { color: #111827; }
+
+    /* Selectbox container — card surface */
+    [data-testid="stSelectbox"] > div:first-child {
+        background-color: #FFFFFF;
+        border: 1px solid #D1D5DB;
+        border-radius: 6px;
+    }
+
+    /* Selectbox selected value text */
+    [data-testid="stSelectbox"] span { color: #111827; }
+
+    /* Dataframe */
+    [data-testid="stDataFrame"] { border: 1px solid #D1D5DB; border-radius: 6px; }
+
+    /* Dividers */
+    hr { border-color: #D1D5DB; }
+
+    /* Links */
+    a { color: #1D4ED8; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("Lakehouse Coverage")
 
 if not LEDGER_PATH.exists():
@@ -191,13 +233,13 @@ for (table_name, provider), grp in groups:
         z_vals.append(z_row)
         hover_text.append(h_row)
 
-    # z=-1: weekend(gray), z=0: no data(white), z=0.1–1.0: green gradient
+    # z=-1: weekend(gray), z=0: no data(white), z=0.1–1.0: teal gradient
     colorscale = [
-        [0.0,    "#d0d0d0"],  # z=-1: weekend gray
-        [0.4999, "#d0d0d0"],
-        [0.5,    "#ffffff"],  # z=0: no data white
-        [0.5001, "#c8f5c8"],  # z=0.1: faint green
-        [1.0,    "#1a7a35"],  # z=1.0: rich dark green
+        [0.0,    "#D1D5DB"],  # z=-1: weekend — border gray
+        [0.4999, "#D1D5DB"],
+        [0.5,    "#FFFFFF"],  # z=0: no data — surface white
+        [0.5001, "#cceeec"],  # z~0.1: faint teal
+        [1.0,    "#0D9488"],  # z=1.0: full teal accent
     ]
 
     fig = go.Figure(
@@ -220,6 +262,9 @@ for (table_name, provider), grp in groups:
         yaxis_title="Month",
         height=max(300, len(all_months) * 25 + 100),
         margin={"t": 20, "b": 40},
+        paper_bgcolor="#F9FAFB",
+        plot_bgcolor="#F9FAFB",
+        font={"color": "#111827"},
     )
     st.plotly_chart(fig, use_container_width=True, key=f"heatmap_{table_name}_{provider}")
 
