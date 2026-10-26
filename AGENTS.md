@@ -119,6 +119,22 @@ DataReader (reader/)
 - Calc modules must remain pure — no I/O, no Streamlit. They take DataFrames in and return DataFrames/values out.
 - `scripts/` contains one-off migration and verification scripts. They are not part of the production library.
 
+## Docs conventions
+
+All markdown files added to `docs/` must include front matter:
+
+```markdown
+---
+date_created: YYYY-MM-DD
+description: One sentence describing what this document covers.
+pull_request: https://github.com/jwplatta/tractatus/pull/<N>  # omit if not tied to a PR
+---
+```
+
+## UI
+
+The Tractatus coverage app and any future dashboards use a shared role-based color palette with light and dark mode variants. See [`docs/notes/ui_color_palette.md`](docs/notes/ui_color_palette.md) before adding colors to any UI component. Do not introduce one-off colors — extend the palette note instead.
+
 ## Backlog
 
 Use the `project-backlog` skill to create and manage work items in `docs/backlog/`. Items are committed markdown files — not ephemeral notes.
