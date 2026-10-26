@@ -200,14 +200,16 @@ for (table_name, provider), grp in groups:
 
     # z=-1: weekend(gray), z=0: no data(light red), z=0.5: future(blank),
     # z=0.6–1.0: teal gradient for data
+    # Colorscale positions = (z + 1) / 2  (zmin=-1, zmax=1)
+    # z=-1 → 0.0, z=0 → 0.5, z=0.5 → 0.75, z=0.6 → 0.8, z=1.0 → 1.0
     colorscale = [
         [0.0,    "#6B7280"],  # z=-1: weekend gray
-        [0.2,    "#6B7280"],
-        [0.201,  "#FECACA"],  # z=0: no data — light red
-        [0.35,   "#FECACA"],
-        [0.351,  "#F8FAFC"],  # z=0.5: future — near white/blank
-        [0.55,   "#F8FAFC"],
-        [0.551,  "#0d4f4a"],  # z=0.6: faint teal
+        [0.4999, "#6B7280"],
+        [0.5,    "#FECACA"],  # z=0: no data — light red
+        [0.7499, "#FECACA"],
+        [0.75,   "#F8FAFC"],  # z=0.5: future — near white
+        [0.7999, "#F8FAFC"],
+        [0.8,    "#0d4f4a"],  # z=0.6: faint teal
         [1.0,    "#2DD4BF"],  # z=1.0: bright teal
     ]
 
