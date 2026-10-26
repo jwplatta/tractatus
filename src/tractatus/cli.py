@@ -888,8 +888,10 @@ def cache_clear(
 
 @app_cmd.command("coverage")
 def app_coverage(
-    port: int = typer.Option(8501, "--port"),
-    ledger: Path | None = typer.Option(None, "--ledger", help="Path to catalog_ledger.db"),
+    port: Annotated[int, typer.Option("--port", help="Port to serve the app on.")] = 8501,
+    ledger: Annotated[
+        Path | None, typer.Option("--ledger", help="Path to catalog_ledger.db.")
+    ] = None,
 ) -> None:
     """Launch the lakehouse coverage visualization app."""
     if shutil.which("streamlit") is None:
