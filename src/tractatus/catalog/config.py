@@ -11,7 +11,7 @@ from tractatus.config import TractatusConfig
 _DEFAULTS: dict[str, str] = {
     "catalog_type": "glue",
     "glue_database": "tractatus",
-    "catalog_database_url": str(Path.home() / ".tractatus" / "catalog_ledger.db"),
+    "ledger_database_url": str(Path.home() / ".tractatus" / "catalog_ledger.db"),
     "s3_storage_class": "GLACIER_IR",
 }
 
@@ -21,7 +21,7 @@ _ENV_NAMES: dict[str, str] = {
     "iceberg_postgres_url": "ICEBERG_POSTGRES_URL",
     "iceberg_minio_bucket": "MINIO_ICEBERG_BUCKET",
     "glue_database": "GLUE_DATABASE",
-    "catalog_database_url": "CATALOG_DATABASE_URL",
+    "ledger_database_url": "LEDGER_DATABASE_URL",
     "s3_storage_class": "S3_STORAGE_CLASS",
     "minio_endpoint": "MINIO_ENDPOINT",
     "minio_bucket": "MINIO_BUCKET",
@@ -97,7 +97,7 @@ class CatalogConfig:
             aws_region=tc.aws_region,
             aws_profile=tc.aws_profile,
             data_root=tc.tickrake_data_dir,
-            database_url=values.get("catalog_database_url") or _DEFAULTS["catalog_database_url"],
+            database_url=values.get("ledger_database_url") or _DEFAULTS["ledger_database_url"],
             s3_storage_class=values.get("s3_storage_class") or _DEFAULTS["s3_storage_class"],
             minio_endpoint=values.get("minio_endpoint"),
             minio_bucket=values.get("minio_bucket"),
