@@ -19,10 +19,12 @@ catalog using PostgreSQL + MinIO, validate everything works, then flip to AWS wh
 - `tickrake-historical` MinIO bucket deleted — data is fully covered by `tractatus-lakehouse`
 
 ### Data in tractatus-iceberg (local Iceberg warehouse)
-- Options: all historical data from 2025-12-18 through 2026-10-22 has been appended
+- Options: all historical data from 2025-12-18 through 2026-10-23 has been appended
   - Historical (up to Oct 16): backfilled via `scripts/backfill_local_lakehouse_from_cache.py`
-  - Oct 19–22: reset ledger to `discovered`, republished via CSV pipeline
+  - Oct 19–23: reset ledger to `discovered`, republished via CSV pipeline
   - Snapshots expired after backfill (was 11,331 → 1)
+- **Gap: 2023-09-26 → 2025-10-10** — purchased (non-Schwab) dataset, SPXW only, one parquet per day
+- **Gap: 2025-10-11 → 2025-12-17** — no data; this is a known collection gap between the purchased dataset ending and Schwab scraping resuming
 - Other tables (level_one, candles, order_book, fundamentals): NOT YET published to local Iceberg
 
 ### Data in tractatus-lakehouse (cache bucket)

@@ -34,7 +34,7 @@ Publishes compacted options Parquet files to an Apache Iceberg table backed by A
 | Variable              | Required | Default                                                          | Description                                          |
 |-----------------------|----------|------------------------------------------------------------------|------------------------------------------------------|
 | `ICEBERG_BUCKET`      | **yes**  | —                                                                | S3 bucket for Iceberg table data and metadata        |
-| `CATALOG_DATABASE_URL`| no       | `~/.tractatus/catalog_ledger.db` (SQLite)                        | Database URL: file path for SQLite, `postgresql://` URL for PostgreSQL |
+| `LEDGER_DATABASE_URL`| no       | `~/.tractatus/catalog_ledger.db` (SQLite)                        | Database URL: file path for SQLite, `postgresql://` URL for PostgreSQL |
 | `GLUE_DATABASE`       | no       | `tractatus`                                                      | AWS Glue database name                               |
 | `AWS_PROFILE`         | no       | —                                                                | AWS profile for S3 and Glue access                   |
 | `AWS_REGION`          | no       | `us-east-1`                                                      | AWS region for Glue and S3                           |
@@ -48,14 +48,14 @@ The publication ledger supports two backends:
 
 ### SQLite (default)
 
-Used for local development and testing. No setup needed — the database file is created automatically at `~/.tractatus/catalog_ledger.db` (or wherever `CATALOG_DATABASE_URL` points).
+Used for local development and testing. No setup needed — the database file is created automatically at `~/.tractatus/catalog_ledger.db` (or wherever `LEDGER_DATABASE_URL` points).
 
 ### PostgreSQL (production)
 
 For production, point to the quant-infra PostgreSQL instance:
 
 ```bash
-export CATALOG_DATABASE_URL=postgresql://tractatus_user:tractatus@localhost:5432/tractatus
+export LEDGER_DATABASE_URL=postgresql://tractatus_user:tractatus@localhost:5432/tractatus
 ```
 
 The quant-infra init script creates the database and user:
@@ -83,16 +83,16 @@ psql -h localhost -p 5433 -U postgres -d tractatus -c "GRANT ALL ON SCHEMA publi
 From a container on the Docker network:
 
 ```
-CATALOG_DATABASE_URL=postgresql://tractatus_user:tractatus@postgres:5432/tractatus
+LEDGER_DATABASE_URL=postgresql://tractatus_user:tractatus@postgres:5432/tractatus
 ```
 
 From the host machine (dev):
 
 ```
-CATALOG_DATABASE_URL=postgresql://tractatus_user:tractatus@localhost:5433/tractatus
+LEDGER_DATABASE_URL=postgresql://tractatus_user:tractatus@localhost:5433/tractatus
 ```
 
-Omit `CATALOG_DATABASE_URL` entirely to use SQLite (local dev default).
+Omit `LEDGER_DATABASE_URL` entirely to use SQLite (local dev default).
 
 ## AWS Setup
 
@@ -172,7 +172,7 @@ tractatus-publisher:
   profiles: [prod]
   environment:
     ICEBERG_BUCKET: tractatus-lakehouse
-    CATALOG_DATABASE_URL: postgresql://tractatus_user:tractatus@postgres:5432/tractatus
+    LEDGER_DATABASE_URL: postgresql://tractatus_user:tractatus@postgres:5432/tractatus
     TICKRAKE_DATA_DIR: /data
     AWS_PROFILE: default
   volumes:

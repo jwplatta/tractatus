@@ -160,7 +160,7 @@ tractatus catalog sync-ledger --table options
 |---|---|---|
 | `ICEBERG_BUCKET` | Yes | S3 bucket for Iceberg data and metadata |
 | `GLUE_DATABASE` | No | Glue database name (default: `tractatus`) |
-| `CATALOG_DATABASE_URL` | No | Ledger database (default: `~/.tractatus/catalog_ledger.db`). Set to a `postgresql://` URL for production. |
+| `LEDGER_DATABASE_URL` | No | Ledger database (default: `~/.tractatus/catalog_ledger.db`). Set to a `postgresql://` URL for production. |
 | `S3_STORAGE_CLASS` | No | S3 storage class for uploads (default: `GLACIER_IR`) |
 
 ## Development
