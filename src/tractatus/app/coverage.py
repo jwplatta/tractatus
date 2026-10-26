@@ -260,6 +260,8 @@ def _compute_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "gaps": gap_count,
             }
         )
+    if not rows:
+        return pd.DataFrame(columns=["table_name", "provider", "symbol", "first_date", "last_date", "total_days", "cached_days", "pct_cached", "gaps"])
     return pd.DataFrame(rows).sort_values("symbol").reset_index(drop=True)
 
 
