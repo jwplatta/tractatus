@@ -72,66 +72,6 @@ def load_artifacts(ledger_path: str) -> pd.DataFrame:
 
 st.set_page_config(page_title="Lakehouse Coverage", layout="wide")
 
-st.markdown(
-    """
-    <style>
-    /* ---- Light mode ---- */
-    @media (prefers-color-scheme: light) {
-        :root {
-            --bg-page:    #F9FAFB;
-            --bg-card:    #FFFFFF;
-            --blue:       #1D4ED8;
-            --teal:       #0D9488;
-            --text-main:  #111827;
-            --text-sec:   #4B5563;
-            --border:     #D1D5DB;
-            --btn-text:   #FFFFFF;
-        }
-    }
-    /* ---- Dark mode ---- */
-    @media (prefers-color-scheme: dark) {
-        :root {
-            --bg-page:    #0B1220;
-            --bg-card:    #111827;
-            --blue:       #60A5FA;
-            --teal:       #2DD4BF;
-            --text-main:  #F9FAFB;
-            --text-sec:   #9CA3AF;
-            --border:     #374151;
-            --btn-text:   #0B1220;
-        }
-    }
-
-    [data-testid="stAppViewContainer"],
-    [data-testid="stAppViewBlockContainer"] { background-color: var(--bg-page) !important; }
-    [data-testid="stHeader"]               { background-color: var(--bg-page) !important; }
-
-    /* Text */
-    html, body, p, li, span, label,
-    [data-testid="stMarkdownContainer"]    { color: var(--text-main) !important; }
-    h1, h2, h3, h4                         { color: var(--text-main) !important; }
-
-    /* Selectbox */
-    [data-testid="stSelectbox"] > div { background-color: var(--bg-card) !important; border: 1px solid var(--border) !important; }
-    [data-testid="stSelectbox"] span  { color: var(--text-main) !important; }
-
-    /* Widget labels */
-    [data-testid="stWidgetLabel"] p { color: var(--text-sec) !important; }
-
-    /* Buttons */
-    [data-testid="stButton"] > button {
-        background-color: var(--blue) !important;
-        color: var(--btn-text) !important;
-        border: none !important;
-    }
-
-    /* Dataframe */
-    [data-testid="stDataFrame"] { border: 1px solid var(--border) !important; border-radius: 6px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 st.title("Lakehouse Coverage")
 
 if not LEDGER_PATH.exists():
@@ -250,13 +190,13 @@ for (table_name, provider), grp in groups:
         z_vals.append(z_row)
         hover_text.append(h_row)
 
-    # z=-1: weekend(gray), z=0: no data(white), z=0.1–1.0: teal gradient
+    # z=-1: weekend(gray), z=0: no data(dark card), z=0.1–1.0: teal gradient
     colorscale = [
-        [0.0,    "#D1D5DB"],  # z=-1: weekend — border gray
-        [0.4999, "#D1D5DB"],
-        [0.5,    "#FFFFFF"],  # z=0: no data — surface white
-        [0.5001, "#cceeec"],  # z~0.1: faint teal
-        [1.0,    "#0D9488"],  # z=1.0: full teal accent
+        [0.0,    "#374151"],  # z=-1: weekend — dark border gray
+        [0.4999, "#374151"],
+        [0.5,    "#111827"],  # z=0: no data — dark card surface
+        [0.5001, "#0d4f4a"],  # z~0.1: faint dark teal
+        [1.0,    "#2DD4BF"],  # z=1.0: bright teal accent
     ]
 
     fig = go.Figure(
