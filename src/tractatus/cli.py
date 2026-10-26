@@ -48,10 +48,12 @@ data_app = typer.Typer(no_args_is_help=True, help="Retrieve Tickrake data.")
 config_app = typer.Typer(no_args_is_help=True, help="Manage Tractatus configuration.")
 catalog_app = typer.Typer(no_args_is_help=True, help="Iceberg catalog operations.")
 cache_app = typer.Typer(no_args_is_help=False, help="Local cache management.")
+app_cmd = typer.Typer(no_args_is_help=True, help="Local web apps.")
 app.add_typer(init_app, name="init")
 app.add_typer(data_app, name="data")
 app.add_typer(config_app, name="config")
 app.add_typer(catalog_app, name="catalog")
+app.add_typer(app_cmd, name="app")
 catalog_app.add_typer(cache_app, name="cache")
 
 _PROJECT_FILES = {
@@ -877,3 +879,24 @@ def cache_clear(
         typer.echo(f"Cleared {cleared} cached file(s) for table {table!r}.")
     finally:
         ledger.close()
+
+
+# ---------------------------------------------------------------------------
+# app sub-commands
+# ---------------------------------------------------------------------------
+
+
+@app_cmd.command("coverage")
+def app_coverage(
+    port: int = typer.Option(8501, "--port"),
+    ledger: Path | None = typer.Option(None, "--ledger", help="Path to catalog_ledger.db"),
+) -> None:
+    """Launch the lakehouse coverage visualization app."""
+    if shutil.which("streamlit") is None:
+        typer.echo("ERROR: streamlit not found on PATH. Install it with: pip install streamlit")
+        raise typer.Exit(1)
+    app_path = Path(__file__).parent / "app" / "coverage.py"
+    cmd = ["streamlit", "run", str(app_path), "--server.port", str(port)]
+    if ledger is not None:
+        cmd += ["--", str(ledger)]
+    subprocess.run(cmd, check=True)
