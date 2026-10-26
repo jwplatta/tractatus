@@ -7,6 +7,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -135,34 +136,65 @@ for (table_name, provider), grp in groups:
     all_days = list(range(1, 32))
 
     # Build z matrix: rows=months, cols=days
-    # Values: 1=cached(green), 0=in lakehouse(blue), None=no data
     pivot = agg.pivot(index="year_month", columns="day", values="cached")
     pivot = pivot.reindex(index=all_months, columns=all_days)
 
-    # Encode: 1 -> 2 (cached), 0 -> 1 (lakehouse), NaN -> 0 (no data)
-    z = pivot.copy()
-    z_encoded = z.map(lambda v: 2 if v == 1 else (1 if v == 0 else 0))
+    # Build parallel matrices for z values and hover text
+    z_vals = []
+    hover_text = []
+    for ym in all_months:
+        z_row = []
+        h_row = []
+        for d in all_days:
+            try:
+                actual_date = pd.Timestamp(f"{ym}-{d:02d}")
+            except ValueError:
+                # Day doesn't exist in this month (e.g. Feb 30)
+                z_row.append(np.nan)
+                h_row.append("")
+                continue
+            is_weekend = actual_date.dayofweek >= 5
+            date_str = actual_date.strftime("%Y-%m-%d")
+            if is_weekend:
+                z_row.append(-1)
+                h_row.append(f"{date_str} (weekend)")
+            else:
+                cached_val = pivot.loc[ym, d] if ym in pivot.index and d in pivot.columns else np.nan
+                if pd.isna(cached_val):
+                    z_row.append(0)
+                    h_row.append(f"{date_str}: no data")
+                elif cached_val == 1:
+                    z_row.append(2)
+                    h_row.append(f"{date_str}: cached")
+                else:
+                    z_row.append(1)
+                    h_row.append(f"{date_str}: in lakehouse")
+        z_vals.append(z_row)
+        hover_text.append(h_row)
 
+    # -1=weekend(gray), 0=no data(white), 1=lakehouse(blue), 2=cached(green)
     colorscale = [
-        [0.0, "#ffffff"],   # no data
-        [0.5, "#3498db"],   # in lakehouse, not cached
-        [0.999, "#3498db"],
-        [1.0, "#2ecc71"],   # cached
+        [0.0,   "#d0d0d0"],  # weekend
+        [0.25,  "#d0d0d0"],
+        [0.251, "#ffffff"],  # no data
+        [0.5,   "#ffffff"],
+        [0.501, "#3498db"],  # in lakehouse
+        [0.75,  "#3498db"],
+        [0.751, "#2ecc71"],  # cached
+        [1.0,   "#2ecc71"],
     ]
 
     fig = go.Figure(
         go.Heatmap(
-            z=z_encoded.values,
+            z=z_vals,
             x=[str(d) for d in all_days],
             y=all_months,
             colorscale=colorscale,
-            zmin=0,
+            zmin=-1,
             zmax=2,
             showscale=False,
-            hovertemplate="Month: %{y}<br>Day: %{x}<br>Status: %{customdata}<extra></extra>",
-            customdata=z_encoded.map(
-                lambda v: "cached" if v == 2 else ("in lakehouse" if v == 1 else "no data")
-            ).values,
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hover_text,
         )
     )
     fig.update_layout(
