@@ -503,8 +503,8 @@ class Publisher:
     # is added from sampled_at before grouping — it is not a native schema column.
     _TABLE_GRAIN: dict[str, tuple[str | None, tuple[str, ...]]] = {
         "options": ("sampled_at", ("provider", "option_root", "sample_date")),
-        "level_one_equities": ("sampled_at", ("provider", "symbol", "sample_date")),
-        "level_one_futures": ("sampled_at", ("provider", "symbol", "sample_date")),
+        "level_one_equities": ("received_at", ("provider", "symbol", "sample_date")),
+        "level_one_futures": ("received_at", ("provider", "symbol", "sample_date")),
         "order_book": ("received_at", ("provider", "symbol", "sample_date")),
         "candles": (None, ("provider", "interval", "symbol")),
         "fundamentals": ("sampled_at", ("provider", "sample_date")),
