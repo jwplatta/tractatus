@@ -15,7 +15,6 @@ from typing import Annotated
 import boto3
 import typer
 from dotenv import load_dotenv
-from pyiceberg.catalog import load_catalog
 from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import AlwaysTrue
 
@@ -348,17 +347,12 @@ def catalog_sync_ledger(
     """
     config = CatalogConfig.load()
 
-    props: dict[str, str] = {
-        "type": "glue",
-        "glue.region": config.aws_region,
-        "s3.region": config.aws_region,
-        "warehouse": config.iceberg_warehouse,
-    }
-    if config.aws_profile:
-        props["glue.profile-name"] = config.aws_profile
-        props["s3.profile-name"] = config.aws_profile
+    publisher = Publisher(config)
+    try:
+        catalog = publisher._iceberg_catalog()
+    finally:
+        publisher.close()
 
-    catalog = load_catalog("glue", **props)
     full_name = f"{config.glue_database}.{table}"
 
     try:
@@ -454,19 +448,13 @@ def catalog_reset(
     config = CatalogConfig.load()
     ledger = Ledger(config.database_url)
 
+    publisher = Publisher(config)
     try:
-        # Build Iceberg catalog connection
-        props: dict[str, str] = {
-            "type": "glue",
-            "glue.region": config.aws_region,
-            "s3.region": config.aws_region,
-            "warehouse": config.iceberg_warehouse,
-        }
-        if config.aws_profile:
-            props["glue.profile-name"] = config.aws_profile
-            props["s3.profile-name"] = config.aws_profile
+        catalog = publisher._iceberg_catalog()
+    finally:
+        publisher.close()
 
-        catalog = load_catalog("glue", **props)
+    try:
         full_name = f"{config.glue_database}.{table}"
 
         try:
@@ -518,17 +506,31 @@ def catalog_reset(
             iceberg_table.maintenance.expire_snapshots().older_than(datetime.now(UTC)).commit()
             typer.echo("Expired old snapshots.")
 
-            # 3. Delete the now-orphaned data files from S3
-            session_kwargs: dict[str, str] = {"region_name": config.aws_region}
-            if config.aws_profile:
-                session_kwargs["profile_name"] = config.aws_profile
-            s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
+            # 3. Delete the now-orphaned data files from S3/MinIO
+            if config.catalog_type == "sql":
+                from botocore.config import Config as BotocoreConfig  # noqa: PLC0415
 
-            s3_keys = [fp.removeprefix(f"s3://{config.iceberg_bucket}/") for fp in file_paths]
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=config.minio_endpoint,
+                    aws_access_key_id=config.minio_access_key or "",
+                    aws_secret_access_key=config.minio_secret_key or "",
+                    region_name="us-east-1",
+                    config=BotocoreConfig(signature_version="s3v4"),
+                )
+                iceberg_warehouse_bucket = config.iceberg_minio_bucket or ""
+            else:
+                session_kwargs: dict[str, str] = {"region_name": config.aws_region}
+                if config.aws_profile:
+                    session_kwargs["profile_name"] = config.aws_profile
+                s3 = boto3.Session(**session_kwargs).client("s3")  # type: ignore[arg-type]
+                iceberg_warehouse_bucket = config.iceberg_bucket or ""
+
+            s3_keys = [fp.removeprefix(f"s3://{iceberg_warehouse_bucket}/") for fp in file_paths]
             for i in range(0, len(s3_keys), 1000):
                 batch = [{"Key": k} for k in s3_keys[i : i + 1000]]
                 s3.delete_objects(
-                    Bucket=config.iceberg_bucket or "",
+                    Bucket=iceberg_warehouse_bucket,
                     Delete={"Objects": batch},  # type: ignore[typeddict-item]
                 )
             typer.echo(f"Deleted {len(s3_keys)} orphan data files from S3.")
@@ -555,17 +557,11 @@ def catalog_setup() -> None:
     from tractatus.catalog.schemas import TABLE_DEFS, ensure_table  # noqa: PLC0415
 
     config = CatalogConfig.load()
-    props: dict[str, str] = {
-        "type": "glue",
-        "glue.region": config.aws_region,
-        "s3.region": config.aws_region,
-        "warehouse": config.iceberg_warehouse,
-    }
-    if config.aws_profile:
-        props["glue.profile-name"] = config.aws_profile
-        props["s3.profile-name"] = config.aws_profile
-
-    catalog = load_catalog("glue", **props)
+    publisher = Publisher(config)
+    try:
+        catalog = publisher._iceberg_catalog()
+    finally:
+        publisher.close()
 
     for table_name in sorted(TABLE_DEFS):
         full_name = f"{config.glue_database}.{table_name}"
@@ -649,7 +645,7 @@ def catalog_purge(
     table: Annotated[str, typer.Option("--table", help="Iceberg table to purge.")],
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
 ) -> None:
-    """Purge an Iceberg table: delete all data/metadata from S3, drop from Glue, and reset ledger.
+    """Purge an Iceberg table: delete all data/metadata, drop from catalog, and reset ledger.
 
     Use this for full table rebuilds (e.g. schema migration). For partial resets
     scoped by date, use ``catalog reset`` instead.
@@ -657,17 +653,11 @@ def catalog_purge(
     config = CatalogConfig.load()
     full_name = f"{config.glue_database}.{table}"
 
-    props: dict[str, str] = {
-        "type": "glue",
-        "glue.region": config.aws_region,
-        "s3.region": config.aws_region,
-        "warehouse": config.iceberg_warehouse,
-    }
-    if config.aws_profile:
-        props["glue.profile-name"] = config.aws_profile
-        props["s3.profile-name"] = config.aws_profile
-
-    catalog = load_catalog("glue", **props)
+    publisher = Publisher(config)
+    try:
+        catalog = publisher._iceberg_catalog()
+    finally:
+        publisher.close()
 
     # Verify table exists before prompting
     try:
@@ -676,21 +666,24 @@ def catalog_purge(
         typer.echo(f"Table {full_name} does not exist.", err=True)
         raise typer.Exit(1) from None
 
+    catalog_backend = config.catalog_type  # "sql" or "glue"
     ledger = Ledger(config.database_url)
     try:
         summary = ledger.summary(table)
         ledger_count = sum(summary.values())
 
         typer.echo(f"\nTable: {full_name}")
+        typer.echo(f"  Catalog backend:          {catalog_backend}")
+        typer.echo(f"  Ledger:                   {config.database_url}")
         typer.echo(f"  Ledger records to delete: {ledger_count} {summary}")
-        typer.echo("  Will purge all S3 data/metadata and drop from Glue")
+        typer.echo("  Will purge all data/metadata and drop from catalog")
         typer.echo()
 
         if not yes and not typer.confirm("Proceed with purge?", default=False):
             raise typer.Abort()
 
         catalog.purge_table(full_name)
-        typer.echo(f"Purged {full_name} (data, metadata, and Glue entry removed).")
+        typer.echo(f"Purged {full_name} (data, metadata, and catalog entry removed).")
 
         count = ledger.delete_all(table)
         typer.echo(f"Deleted {count} ledger records.")
