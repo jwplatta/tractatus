@@ -6,9 +6,9 @@ Supports per-table directory layouts via ``_PARSERS``.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import PurePosixPath
 
 from tractatus.catalog.file_store import FileStore
@@ -195,6 +195,21 @@ def data_dir_name(table_name: str) -> str:
     return _DATA_DIR_NAMES.get(table_name, table_name)
 
 
+def discover_files_flat(
+    store: FileStore,
+    table_name: str = "options",
+    providers: list[str] | None = None,
+    after: date | None = None,
+    before: date | None = None,
+) -> list[DiscoveredFile]:
+    """Convenience wrapper that collects all results from ``discover_files`` into a flat list."""
+    return [
+        f
+        for _, day_files in discover_files(store, table_name, providers, after, before)
+        for f in day_files
+    ]
+
+
 def _file_format_from_key(key: str) -> str:
     """Derive file format from extension."""
     if key.endswith(".ndjson"):
@@ -210,8 +225,12 @@ def discover_files(
     providers: list[str] | None = None,
     after: date | None = None,
     before: date | None = None,
-) -> list[DiscoveredFile]:
+) -> Generator[tuple[date, list[DiscoveredFile]], None, None]:
     """Scan *store* for data files matching *table_name*'s layout.
+
+    Yields ``(date, files)`` one day at a time so callers can report progress
+    and record results incrementally. When no date range is given, yields a
+    single ``(date.min, files)`` tuple with all discovered files.
 
     Parameters
     ----------
@@ -220,7 +239,8 @@ def discover_files(
     table_name:
         Which table's directory layout and key parser to use.
     providers:
-        If given, only scan these provider subdirectories.
+        If given, only scan these provider subdirectories. When omitted and
+        iterating by date, providers are resolved once via ``store.list_subdirs``.
     after:
         Only include files with sample_date >= after.
     before:
@@ -233,40 +253,64 @@ def discover_files(
             f"Known tables: {', '.join(sorted(_PARSERS))}"
         )
 
-    prefix = data_dir_name(table_name)
+    table_dir = data_dir_name(table_name)
     extensions = _FILE_EXTENSIONS[table_name]
-    entries = store.list_files(prefix, extensions=extensions, providers=providers)
 
-    results: list[DiscoveredFile] = []
-    for full_key, size_bytes in entries:
-        # Strip the table prefix to get the key parsers expect
-        # e.g. "options/schwab/2026/..." → "schwab/2026/..."
-        relative_key = (
-            full_key[len(prefix) + 1 :] if full_key.startswith(prefix + "/") else full_key
-        )
-
-        parsed = parser(relative_key)
-        if parsed is None:
-            continue
-
-        provider, root, sample_date, metadata = parsed
-
-        if after is not None and sample_date < after:
-            continue
-        if before is not None and sample_date >= before:
-            continue
-
-        results.append(
-            DiscoveredFile(
-                relative_path=relative_key,
-                provider=provider,
-                symbol=root,
-                sample_date=sample_date,
-                sha256=store.sha256(full_key),
-                size_bytes=size_bytes,
-                file_format=_file_format_from_key(full_key),
-                metadata=metadata,
+    if after is not None and before is not None:
+        # Targeted date-by-date scan — one S3 list call per (provider, date).
+        resolved_providers = providers or store.list_subdirs(table_dir)
+        current = after
+        while current < before:
+            date_path = f"{current.year:04d}/{current.month:02d}/{current.day:02d}"
+            day_files: list[DiscoveredFile] = []
+            for provider in resolved_providers:
+                prefix = f"{table_dir}/{provider}/{date_path}"
+                for full_key, size_bytes in store.list_files_at(prefix, extensions):
+                    relative_key = (
+                        full_key[len(table_dir) + 1 :]
+                        if full_key.startswith(table_dir + "/")
+                        else full_key
+                    )
+                    parsed = parser(relative_key)
+                    if parsed is None:
+                        continue
+                    _, root, sample_date, metadata = parsed
+                    day_files.append(
+                        DiscoveredFile(
+                            relative_path=relative_key,
+                            provider=provider,
+                            symbol=root,
+                            sample_date=sample_date,
+                            sha256=store.sha256(full_key),
+                            size_bytes=size_bytes,
+                            file_format=_file_format_from_key(full_key),
+                            metadata=metadata,
+                        )
+                    )
+            yield current, day_files
+            current += timedelta(days=1)
+    else:
+        # Full scan — no date range given, list entire table prefix.
+        entries = store.list_files(table_dir, extensions=extensions, providers=providers)
+        results: list[DiscoveredFile] = []
+        for full_key, size_bytes in entries:
+            relative_key = (
+                full_key[len(table_dir) + 1 :] if full_key.startswith(table_dir + "/") else full_key
             )
-        )
-
-    return results
+            parsed = parser(relative_key)
+            if parsed is None:
+                continue
+            provider, root, sample_date, metadata = parsed
+            results.append(
+                DiscoveredFile(
+                    relative_path=relative_key,
+                    provider=provider,
+                    symbol=root,
+                    sample_date=sample_date,
+                    sha256=store.sha256(full_key),
+                    size_bytes=size_bytes,
+                    file_format=_file_format_from_key(full_key),
+                    metadata=metadata,
+                )
+            )
+        yield date.min, results

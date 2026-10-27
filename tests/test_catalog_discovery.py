@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tractatus.catalog.discovery import discover_files
+from tractatus.catalog.discovery import discover_files, discover_files_flat
 from tractatus.catalog.file_store import LocalFileStore
 
 
@@ -32,7 +32,7 @@ def test_discover_finds_csv(tmp_path: Path) -> None:
     _create_options_csv(tmp_path, "schwab", date(2026, 6, 25), "AAPL", "2026-07-18")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store)
+    files = discover_files_flat(store)
     assert len(files) == 2
     roots = {f.symbol for f in files}
     assert roots == {"SPX", "AAPL"}
@@ -51,7 +51,7 @@ def test_discover_filters_provider(tmp_path: Path) -> None:
     _create_options_csv(tmp_path, "other", date(2026, 6, 25), "AAPL", "2026-07-18")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store, providers=["schwab"])
+    files = discover_files_flat(store, providers=["schwab"])
     assert len(files) == 1
     assert files[0].provider == "schwab"
 
@@ -70,7 +70,7 @@ def test_discover_skips_empty_files(tmp_path: Path) -> None:
     path.write_bytes(b"")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store)
+    files = discover_files_flat(store)
     assert len(files) == 0
 
 
@@ -79,7 +79,7 @@ def test_discover_multiple_dates(tmp_path: Path) -> None:
     _create_options_csv(tmp_path, "schwab", date(2026, 6, 25), "SPX", "2026-07-18")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store)
+    files = discover_files_flat(store)
     assert len(files) == 2
     dates = {f.sample_date for f in files}
     assert dates == {date(2026, 6, 24), date(2026, 6, 25)}
@@ -89,21 +89,41 @@ def test_discover_relative_path(tmp_path: Path) -> None:
     _create_options_csv(tmp_path, "schwab", date(2026, 6, 25), "SPX", "2026-07-18")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store)
+    files = discover_files_flat(store)
     assert len(files) == 1
     assert files[0].relative_path == "schwab/2026/06/25/SPX_exp2026-07-18_2026-06-25_14-30-00.csv"
 
 
 def test_discover_empty_dir(tmp_path: Path) -> None:
     store = LocalFileStore(tmp_path)
-    files = discover_files(store)
+    files = discover_files_flat(store)
     assert files == []
 
 
 def test_discover_nonexistent_dir(tmp_path: Path) -> None:
     store = LocalFileStore(tmp_path / "nope")
-    files = discover_files(store)
+    files = discover_files_flat(store)
     assert files == []
+
+
+def test_discover_yields_by_date(tmp_path: Path) -> None:
+    """discover_files yields one (date, files) tuple per day in the range."""
+    _create_options_csv(tmp_path, "schwab", date(2026, 6, 24), "SPX", "2026-07-18")
+    _create_options_csv(tmp_path, "schwab", date(2026, 6, 25), "SPX", "2026-07-18")
+
+    store = LocalFileStore(tmp_path)
+    results = list(
+        discover_files(
+            store,
+            after=date(2026, 6, 24),
+            before=date(2026, 6, 26),
+        )
+    )
+    assert len(results) == 2
+    dates = [d for d, _ in results]
+    assert dates == [date(2026, 6, 24), date(2026, 6, 25)]
+    assert len(results[0][1]) == 1
+    assert len(results[1][1]) == 1
 
 
 def _create_ndjson(base: Path, table: str, provider: str, d: date, symbol: str) -> Path:
@@ -156,7 +176,7 @@ def test_discover_level_one_equities(tmp_path: Path) -> None:
     _create_ndjson(tmp_path, "level_one", "schwab", date(2026, 10, 15), "^ES")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="level_one_equities")
+    files = discover_files_flat(store, table_name="level_one_equities")
     assert len(files) == 2
     roots = {f.symbol for f in files}
     assert roots == {"SPY", "QQQ"}
@@ -171,7 +191,7 @@ def test_discover_level_one_futures(tmp_path: Path) -> None:
     _create_ndjson(tmp_path, "level_one", "schwab", date(2026, 10, 15), "SPY")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="level_one_futures")
+    files = discover_files_flat(store, table_name="level_one_futures")
     assert len(files) == 2
     roots = {f.symbol for f in files}
     assert roots == {"^ES", "^NQ"}
@@ -184,7 +204,7 @@ def test_discover_candles(tmp_path: Path) -> None:
     _create_candles_csv_dated(tmp_path, "schwab", d, "5min", "AAPL")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="candles")
+    files = discover_files_flat(store, table_name="candles")
     assert len(files) == 2
     assert all(f.provider == "schwab" for f in files)
     assert {f.symbol for f in files} == {"SPX", "AAPL"}
@@ -198,7 +218,7 @@ def test_discover_candles_dated_relative_path(tmp_path: Path) -> None:
     _create_candles_csv_dated(tmp_path, "schwab", d, "5min", "SPX")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="candles")
+    files = discover_files_flat(store, table_name="candles")
     assert len(files) == 1
     assert files[0].relative_path == "schwab/2026/10/18/5min/SPX.csv"
 
@@ -209,7 +229,7 @@ def test_discover_candles_dated_date_filter(tmp_path: Path) -> None:
     _create_candles_csv_dated(tmp_path, "schwab", date(2026, 10, 19), "5min", "SPX")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(
+    files = discover_files_flat(
         store,
         table_name="candles",
         after=date(2026, 10, 18),
@@ -223,7 +243,7 @@ def test_discover_fundamentals(tmp_path: Path) -> None:
     _create_fundamentals(tmp_path, "schwab", date(2026, 10, 15))
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="fundamentals")
+    files = discover_files_flat(store, table_name="fundamentals")
     assert len(files) == 1
     assert files[0].sample_date == date(2026, 10, 15)
     assert files[0].symbol == "all"
@@ -235,7 +255,7 @@ def test_discover_economic_events(tmp_path: Path) -> None:
     _create_economic_events(tmp_path, "fred", "fomc", date(2026, 9, 17))
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store, table_name="economic_events")
+    files = discover_files_flat(store, table_name="economic_events")
     assert len(files) == 2
     sources = {f.provider for f in files}
     assert sources == {"bls", "fred"}
@@ -246,7 +266,8 @@ def test_discover_economic_events(tmp_path: Path) -> None:
 def test_discover_unknown_table_raises(tmp_path: Path) -> None:
     store = LocalFileStore(tmp_path)
     with pytest.raises(ValueError, match="No discovery config"):
-        discover_files(store, table_name="nonexistent")
+        # ValueError is raised eagerly before the generator yields
+        list(discover_files(store, table_name="nonexistent"))
 
 
 def test_discover_ignores_non_matching_extensions(tmp_path: Path) -> None:
@@ -260,6 +281,6 @@ def test_discover_ignores_non_matching_extensions(tmp_path: Path) -> None:
     parquet_path.write_bytes(b"PAR1fake")
 
     store = LocalFileStore(tmp_path)
-    files = discover_files(store)
+    files = discover_files_flat(store)
     assert len(files) == 1
     assert files[0].file_format == "csv"

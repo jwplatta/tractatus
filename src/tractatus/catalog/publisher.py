@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import PurePosixPath
@@ -20,7 +21,7 @@ from pyiceberg.catalog import Catalog, load_catalog
 from tqdm import tqdm
 
 from tractatus.catalog.config import CatalogConfig
-from tractatus.catalog.discovery import data_dir_name, discover_files
+from tractatus.catalog.discovery import DiscoveredFile, data_dir_name, discover_files
 from tractatus.catalog.file_store import FileStore, LocalFileStore, S3FileStore
 from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_table
@@ -81,8 +82,9 @@ class PublishResult:
 class Publisher:
     """Discover, normalize, and append data files to an Iceberg table."""
 
-    def __init__(self, config: CatalogConfig) -> None:
+    def __init__(self, config: CatalogConfig, verbose: bool = False) -> None:
         self._config = config
+        self._verbose = verbose
         self._ledger = Ledger(config.database_url)
         self._store = self._build_store()
         self._cache_client = self._build_cache_client()
@@ -192,38 +194,53 @@ class Publisher:
         after: date | None = None,
         before: date | None = None,
     ) -> int:
-        """Scan the file store for data files and record them in the ledger."""
+        """Scan the file store for data files and record them in the ledger.
+
+        When a date range is given, iterates one day at a time and records
+        results incrementally — each day's files are written to the ledger
+        before moving to the next day.
+        """
+        total_files = 0
+        total_bytes = 0
         discover_start = time.monotonic()
-        files = discover_files(
+
+        date_range_days = (before - after).days if after and before else None
+        gen = discover_files(
             self._store, table_name=table_name, providers=providers, after=after, before=before
         )
+
+        iterable: Iterable[tuple[date, list[DiscoveredFile]]] = (
+            tqdm(gen, total=date_range_days, desc=f"discover {table_name}", unit="day")
+            if self._verbose
+            else gen
+        )
+
+        for _scan_date, day_files in iterable:
+            for f in day_files:
+                self._ledger.record_discovered(
+                    path=f.relative_path,
+                    table_name=table_name,
+                    sha256=f.sha256,
+                    size_bytes=f.size_bytes,
+                    provider=f.provider,
+                    symbol=f.symbol,
+                    sample_date=f.sample_date.isoformat(),
+                    file_format=f.file_format,
+                )
+            total_files += len(day_files)
+            total_bytes += sum(f.size_bytes for f in day_files)
+
         discover_ms = int((time.monotonic() - discover_start) * 1000)
-
-        ledger_start = time.monotonic()
-        for f in files:
-            self._ledger.record_discovered(
-                path=f.relative_path,
-                table_name=table_name,
-                sha256=f.sha256,
-                size_bytes=f.size_bytes,
-                provider=f.provider,
-                symbol=f.symbol,
-                sample_date=f.sample_date.isoformat(),
-                file_format=f.file_format,
-            )
-        ledger_ms = int((time.monotonic() - ledger_start) * 1000)
-
         logger.info(
             {
                 "event": "discovery_completed",
                 "table": table_name,
-                "file_count": len(files),
-                "total_bytes": sum(f.size_bytes for f in files),
+                "file_count": total_files,
+                "total_bytes": total_bytes,
                 "discover_ms": discover_ms,
-                "ledger_ms": ledger_ms,
             }
         )
-        return len(files)
+        return total_files
 
     def _append(
         self,
@@ -568,7 +585,12 @@ class Publisher:
         root_col = "option_root" if table_name == "options" else "symbol"
         cached_count = 0
 
-        for scan_date in tqdm(dates_to_scan, desc=f"cache {table_name}", unit="day"):
+        iterable = (
+            tqdm(dates_to_scan, desc=f"cache {table_name}", unit="day")
+            if self._verbose
+            else dates_to_scan
+        )
+        for scan_date in iterable:
             if scan_date is not None:
                 day_filter = (
                     f"{date_col} >= '{scan_date.isoformat()}T00:00:00+00:00'"

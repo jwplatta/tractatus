@@ -35,6 +35,20 @@ class FileStore(Protocol):
         """
         ...
 
+    def list_subdirs(self, prefix: str) -> list[str]:
+        """Return immediate child directory names under *prefix*.
+
+        e.g. list_subdirs("order_book") → ["schwab"]
+        """
+        ...
+
+    def list_files_at(self, prefix: str, extensions: list[str]) -> list[tuple[str, int]]:
+        """Return ``(key, size_bytes)`` pairs for files at an exact prefix (non-recursive).
+
+        Used for targeted per-date listing, e.g. prefix = "order_book/schwab/2026/09/18".
+        """
+        ...
+
     def sha256(self, key: str) -> str:
         """Return the SHA-256 hex digest of the object at *key*."""
         ...
@@ -84,6 +98,29 @@ class LocalFileStore:
                     continue
                 relative = str(file_path.relative_to(self._root))
                 results.append((relative, size))
+        return results
+
+    def list_subdirs(self, prefix: str) -> list[str]:
+        base = self._root / prefix
+        if not base.is_dir():
+            return []
+        return sorted(d.name for d in base.iterdir() if d.is_dir())
+
+    def list_files_at(self, prefix: str, extensions: list[str]) -> list[tuple[str, int]]:
+        base = self._root / prefix
+        if not base.is_dir():
+            return []
+        ext_set = set(extensions)
+        results: list[tuple[str, int]] = []
+        for file_path in sorted(base.rglob("*")):
+            if not file_path.is_file():
+                continue
+            if file_path.suffix not in ext_set:
+                continue
+            size = file_path.stat().st_size
+            if size == 0:
+                continue
+            results.append((str(file_path.relative_to(self._root)), size))
         return results
 
     def sha256(self, key: str) -> str:
@@ -143,6 +180,33 @@ class S3FileStore:
                         results.append((key, size))
         results.sort()
         return results
+
+    def list_subdirs(self, prefix: str) -> list[str]:
+        resp = self._client.list_objects_v2(
+            Bucket=self._bucket,
+            Prefix=f"{prefix}/",
+            Delimiter="/",
+        )
+        names = []
+        for cp in resp.get("CommonPrefixes", []):
+            # cp["Prefix"] = "order_book/schwab/" — strip prefix and trailing slash
+            part = cp["Prefix"].removeprefix(f"{prefix}/").rstrip("/")
+            if part:
+                names.append(part)
+        return sorted(names)
+
+    def list_files_at(self, prefix: str, extensions: list[str]) -> list[tuple[str, int]]:
+        ext_set = set(extensions)
+        results: list[tuple[str, int]] = []
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=f"{prefix}/"):
+            for obj in page.get("Contents", []):
+                key: str = obj["Key"]
+                size: int = obj["Size"]
+                suffix = key[key.rfind(".") :] if "." in key else ""
+                if suffix in ext_set and size > 0:
+                    results.append((key, size))
+        return sorted(results)
 
     def sha256(self, key: str) -> str:
         resp = self._client.get_object(Bucket=self._bucket, Key=key)
