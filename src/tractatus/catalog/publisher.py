@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import PurePosixPath
@@ -20,7 +21,7 @@ from pyiceberg.catalog import Catalog, load_catalog
 from tqdm import tqdm
 
 from tractatus.catalog.config import CatalogConfig
-from tractatus.catalog.discovery import data_dir_name, discover_files
+from tractatus.catalog.discovery import DiscoveredFile, data_dir_name, discover_files
 from tractatus.catalog.file_store import FileStore, LocalFileStore, S3FileStore
 from tractatus.catalog.ledger import Ledger
 from tractatus.catalog.normalize import normalize_table
@@ -208,29 +209,26 @@ class Publisher:
             self._store, table_name=table_name, providers=providers, after=after, before=before
         )
 
-        with tqdm(
-            gen,
-            total=date_range_days,
-            desc=f"discover {table_name}",
-            unit="day",
-            disable=not self._verbose,
-        ) as progress:
-            for scan_date, day_files in progress:
-                for f in day_files:
-                    self._ledger.record_discovered(
-                        path=f.relative_path,
-                        table_name=table_name,
-                        sha256=f.sha256,
-                        size_bytes=f.size_bytes,
-                        provider=f.provider,
-                        symbol=f.symbol,
-                        sample_date=f.sample_date.isoformat(),
-                        file_format=f.file_format,
-                    )
-                total_files += len(day_files)
-                total_bytes += sum(f.size_bytes for f in day_files)
-                if date_range_days is not None and day_files:
-                    progress.set_postfix(date=scan_date.isoformat(), files=len(day_files))
+        iterable: Iterable[tuple[date, list[DiscoveredFile]]] = (
+            tqdm(gen, total=date_range_days, desc=f"discover {table_name}", unit="day")
+            if self._verbose
+            else gen
+        )
+
+        for _scan_date, day_files in iterable:
+            for f in day_files:
+                self._ledger.record_discovered(
+                    path=f.relative_path,
+                    table_name=table_name,
+                    sha256=f.sha256,
+                    size_bytes=f.size_bytes,
+                    provider=f.provider,
+                    symbol=f.symbol,
+                    sample_date=f.sample_date.isoformat(),
+                    file_format=f.file_format,
+                )
+            total_files += len(day_files)
+            total_bytes += sum(f.size_bytes for f in day_files)
 
         discover_ms = int((time.monotonic() - discover_start) * 1000)
         logger.info(
@@ -587,9 +585,12 @@ class Publisher:
         root_col = "option_root" if table_name == "options" else "symbol"
         cached_count = 0
 
-        for scan_date in tqdm(
-            dates_to_scan, desc=f"cache {table_name}", unit="day", disable=not self._verbose
-        ):
+        iterable = (
+            tqdm(dates_to_scan, desc=f"cache {table_name}", unit="day")
+            if self._verbose
+            else dates_to_scan
+        )
+        for scan_date in iterable:
             if scan_date is not None:
                 day_filter = (
                     f"{date_col} >= '{scan_date.isoformat()}T00:00:00+00:00'"
