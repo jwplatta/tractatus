@@ -192,38 +192,56 @@ class Publisher:
         after: date | None = None,
         before: date | None = None,
     ) -> int:
-        """Scan the file store for data files and record them in the ledger."""
+        """Scan the file store for data files and record them in the ledger.
+
+        When a date range is given, iterates one day at a time and records
+        results incrementally — each day's files are written to the ledger
+        before moving to the next day.
+        """
+        total_files = 0
+        total_bytes = 0
         discover_start = time.monotonic()
-        files = discover_files(
+
+        date_range_days = (before - after).days if after and before else None
+        gen = discover_files(
             self._store, table_name=table_name, providers=providers, after=after, before=before
         )
+
+        with tqdm(
+            gen,
+            total=date_range_days,
+            desc=f"discover {table_name}",
+            unit="day",
+            disable=date_range_days is None,
+        ) as progress:
+            for scan_date, day_files in progress:
+                for f in day_files:
+                    self._ledger.record_discovered(
+                        path=f.relative_path,
+                        table_name=table_name,
+                        sha256=f.sha256,
+                        size_bytes=f.size_bytes,
+                        provider=f.provider,
+                        symbol=f.symbol,
+                        sample_date=f.sample_date.isoformat(),
+                        file_format=f.file_format,
+                    )
+                total_files += len(day_files)
+                total_bytes += sum(f.size_bytes for f in day_files)
+                if date_range_days is not None and day_files:
+                    progress.set_postfix(date=scan_date.isoformat(), files=len(day_files))
+
         discover_ms = int((time.monotonic() - discover_start) * 1000)
-
-        ledger_start = time.monotonic()
-        for f in files:
-            self._ledger.record_discovered(
-                path=f.relative_path,
-                table_name=table_name,
-                sha256=f.sha256,
-                size_bytes=f.size_bytes,
-                provider=f.provider,
-                symbol=f.symbol,
-                sample_date=f.sample_date.isoformat(),
-                file_format=f.file_format,
-            )
-        ledger_ms = int((time.monotonic() - ledger_start) * 1000)
-
         logger.info(
             {
                 "event": "discovery_completed",
                 "table": table_name,
-                "file_count": len(files),
-                "total_bytes": sum(f.size_bytes for f in files),
+                "file_count": total_files,
+                "total_bytes": total_bytes,
                 "discover_ms": discover_ms,
-                "ledger_ms": ledger_ms,
             }
         )
-        return len(files)
+        return total_files
 
     def _append(
         self,
