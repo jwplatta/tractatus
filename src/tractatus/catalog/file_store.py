@@ -7,7 +7,6 @@ Provides a protocol and two implementations:
 
 from __future__ import annotations
 
-import hashlib
 import io
 from pathlib import Path
 from typing import Protocol
@@ -47,10 +46,6 @@ class FileStore(Protocol):
 
         Used for targeted per-date listing, e.g. prefix = "order_book/schwab/2026/09/18".
         """
-        ...
-
-    def sha256(self, key: str) -> str:
-        """Return the SHA-256 hex digest of the object at *key*."""
         ...
 
     def read_raw(self, key: str) -> bytes:
@@ -122,14 +117,6 @@ class LocalFileStore:
                 continue
             results.append((str(file_path.relative_to(self._root)), size))
         return results
-
-    def sha256(self, key: str) -> str:
-        path = self._root / key
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            while chunk := f.read(8192):
-                h.update(chunk)
-        return h.hexdigest()
 
     def read_raw(self, key: str) -> bytes:
         return (self._root / key).read_bytes()
@@ -207,13 +194,6 @@ class S3FileStore:
                 if suffix in ext_set and size > 0:
                     results.append((key, size))
         return sorted(results)
-
-    def sha256(self, key: str) -> str:
-        resp = self._client.get_object(Bucket=self._bucket, Key=key)
-        h = hashlib.sha256()
-        for chunk in resp["Body"].iter_chunks(8192):
-            h.update(chunk)
-        return h.hexdigest()
 
     def read_raw(self, key: str) -> bytes:
         resp = self._client.get_object(Bucket=self._bucket, Key=key)

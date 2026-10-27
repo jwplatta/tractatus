@@ -30,7 +30,6 @@ class DiscoveredFile:
     provider: str
     symbol: str
     sample_date: date
-    sha256: str
     size_bytes: int
     file_format: str = ""  # "csv" or "ndjson"
     metadata: dict[str, str] = field(default_factory=dict)
@@ -281,7 +280,6 @@ def discover_files(
                             provider=provider,
                             symbol=root,
                             sample_date=sample_date,
-                            sha256=store.sha256(full_key),
                             size_bytes=size_bytes,
                             file_format=_file_format_from_key(full_key),
                             metadata=metadata,
@@ -307,7 +305,6 @@ def discover_files(
                     provider=provider,
                     symbol=root,
                     sample_date=sample_date,
-                    sha256=store.sha256(full_key),
                     size_bytes=size_bytes,
                     file_format=_file_format_from_key(full_key),
                     metadata=metadata,
