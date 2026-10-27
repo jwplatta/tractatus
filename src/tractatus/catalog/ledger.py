@@ -45,7 +45,6 @@ class FileRecord:
 
     path: str
     table_name: str
-    sha256: str
     size_bytes: int
     provider: str
     symbol: str
@@ -69,7 +68,6 @@ _CREATE_TABLE = """\
 CREATE TABLE IF NOT EXISTS catalog_files (
     path             TEXT NOT NULL,
     table_name       TEXT NOT NULL,
-    sha256           TEXT NOT NULL,
     size_bytes       BIGINT NOT NULL,
     provider         TEXT NOT NULL,
     symbol           TEXT NOT NULL,
@@ -121,7 +119,7 @@ _PUBLISHED_COLUMNS = (
 )
 
 _COLUMNS = (
-    "path, table_name, sha256, size_bytes, provider, symbol, sample_date, "
+    "path, table_name, size_bytes, provider, symbol, sample_date, "
     "file_format, s3_key, status, error, discovered_at, committed_at, "
     "cache_key, cached_at, last_accessed_at, updated_at, "
     "rows_total, rows_degraded, quality_flags"
@@ -278,46 +276,27 @@ class Ledger:
         self,
         path: str,
         table_name: str,
-        sha256: str,
         size_bytes: int,
         provider: str,
         symbol: str,
         sample_date: str,
         file_format: str = "",
     ) -> None:
-        """Insert a new file or update an existing one if the hash changed."""
+        """Insert a new file or update size/format if it already exists."""
         now = self._now()
         self._execute(
             """\
-            INSERT INTO catalog_files (path, table_name, sha256, size_bytes, provider, symbol,
+            INSERT INTO catalog_files (path, table_name, size_bytes, provider, symbol,
                                        sample_date, file_format, status, discovered_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'discovered', %s, %s)
             ON CONFLICT (path, table_name) DO UPDATE SET
-                sha256 = EXCLUDED.sha256,
                 size_bytes = EXCLUDED.size_bytes,
                 file_format = EXCLUDED.file_format,
-                status = CASE
-                    WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN 'discovered'
-                    ELSE catalog_files.status
-                END,
-                error = CASE
-                    WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN NULL
-                    ELSE catalog_files.error
-                END,
-                s3_key = CASE
-                    WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN NULL
-                    ELSE catalog_files.s3_key
-                END,
-                committed_at = CASE
-                    WHEN catalog_files.sha256 != EXCLUDED.sha256 THEN NULL
-                    ELSE catalog_files.committed_at
-                END,
                 updated_at = EXCLUDED.updated_at
             """,
             (
                 path,
                 table_name,
-                sha256,
                 size_bytes,
                 provider,
                 symbol,

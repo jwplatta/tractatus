@@ -220,7 +220,6 @@ class Publisher:
                 self._ledger.record_discovered(
                     path=f.relative_path,
                     table_name=table_name,
-                    sha256=f.sha256,
                     size_bytes=f.size_bytes,
                     provider=f.provider,
                     symbol=f.symbol,

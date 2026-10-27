@@ -20,7 +20,6 @@ def test_record_and_retrieve(ledger: Ledger) -> None:
     ledger.record_discovered(
         "schwab/2026/06/25/SPX_exp2026-07-18_2026-06-25_14-30-00.csv",
         table_name="options",
-        sha256="abc123",
         size_bytes=1024,
         provider="schwab",
         symbol="SPX",
@@ -32,7 +31,6 @@ def test_record_and_retrieve(ledger: Ledger) -> None:
     assert record is not None
     assert record.status == "discovered"
     assert record.table_name == "options"
-    assert record.sha256 == "abc123"
     assert record.size_bytes == 1024
     assert record.provider == "schwab"
     assert record.symbol == "SPX"
@@ -40,11 +38,10 @@ def test_record_and_retrieve(ledger: Ledger) -> None:
     assert record.file_format == "csv"
 
 
-def test_idempotent_same_hash(ledger: Ledger) -> None:
+def test_idempotent_rediscover(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -53,11 +50,10 @@ def test_idempotent_same_hash(ledger: Ledger) -> None:
     )
     ledger.mark_committed(["a.csv"], "options")
 
-    # Re-discover with same hash — should not reset status
+    # Re-discover — should not reset status
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -70,43 +66,10 @@ def test_idempotent_same_hash(ledger: Ledger) -> None:
     assert record.status == "committed"
 
 
-def test_hash_change_resets_status(ledger: Ledger) -> None:
-    ledger.record_discovered(
-        "a.csv",
-        table_name="options",
-        sha256="aaa",
-        size_bytes=100,
-        provider="schwab",
-        symbol="SPX",
-        sample_date="2026-01-01",
-        file_format="csv",
-    )
-    ledger.mark_committed(["a.csv"], "options")
-
-    # Re-discover with different hash — should reset to discovered
-    ledger.record_discovered(
-        "a.csv",
-        table_name="options",
-        sha256="bbb",
-        size_bytes=200,
-        provider="schwab",
-        symbol="SPX",
-        sample_date="2026-01-01",
-        file_format="csv",
-    )
-
-    record = ledger.get("a.csv", "options")
-    assert record is not None
-    assert record.status == "discovered"
-    assert record.s3_key is None
-    assert record.committed_at is None
-
-
 def test_status_transitions(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -123,7 +86,6 @@ def test_mark_error(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -142,7 +104,6 @@ def test_pending(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -152,7 +113,6 @@ def test_pending(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="AAPL",
@@ -169,7 +129,6 @@ def test_summary(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -179,7 +138,6 @@ def test_summary(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="AAPL",
@@ -196,7 +154,6 @@ def test_summary_all_tables(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -206,7 +163,6 @@ def test_summary_all_tables(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.ndjson",
         table_name="level_one_equities",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="SPY",
@@ -223,7 +179,6 @@ def test_tables_are_isolated(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -233,7 +188,6 @@ def test_tables_are_isolated(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="level_one_equities",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="SPX",
@@ -241,8 +195,8 @@ def test_tables_are_isolated(ledger: Ledger) -> None:
         file_format="ndjson",
     )
 
-    assert ledger.get("a.csv", "options").sha256 == "aaa"  # type: ignore[union-attr]
-    assert ledger.get("a.csv", "level_one_equities").sha256 == "bbb"  # type: ignore[union-attr]
+    assert ledger.get("a.csv", "options").size_bytes == 100  # type: ignore[union-attr]
+    assert ledger.get("a.csv", "level_one_equities").size_bytes == 200  # type: ignore[union-attr]
 
 
 def test_mark_committed_empty(ledger: Ledger) -> None:
@@ -253,7 +207,6 @@ def test_delete_all(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -263,7 +216,6 @@ def test_delete_all(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.ndjson",
         table_name="level_one_equities",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="SPY",
@@ -282,7 +234,6 @@ def test_delete_filtered_by_date(ledger: Ledger) -> None:
         ledger.record_discovered(
             path,
             table_name="options",
-            sha256=path,
             size_bytes=100,
             provider="schwab",
             symbol="SPX",
@@ -301,7 +252,6 @@ def test_delete_filtered_by_provider(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -311,7 +261,6 @@ def test_delete_filtered_by_provider(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="tradier",
         symbol="SPX",
@@ -329,7 +278,6 @@ def test_pending_filtered_by_date(ledger: Ledger) -> None:
     ledger.record_discovered(
         "oct.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -339,7 +287,6 @@ def test_pending_filtered_by_date(ledger: Ledger) -> None:
     ledger.record_discovered(
         "dec.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="SPX",
@@ -355,7 +302,6 @@ def test_pending_filtered_by_provider(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -365,7 +311,6 @@ def test_pending_filtered_by_provider(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="tradier",
         symbol="SPX",
@@ -381,7 +326,6 @@ def test_pending_no_filters_returns_all(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -391,7 +335,6 @@ def test_pending_no_filters_returns_all(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="tradier",
         symbol="SPX",
@@ -407,7 +350,6 @@ def test_get_s3_keys_filtered(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -417,7 +359,6 @@ def test_get_s3_keys_filtered(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="SPX",
@@ -448,7 +389,6 @@ def test_mark_cached(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -468,7 +408,6 @@ def test_mark_cache_accessed(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -491,7 +430,6 @@ def test_clear_cache_entry(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -512,7 +450,6 @@ def test_cached_files(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -522,7 +459,6 @@ def test_cached_files(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="AAPL",
@@ -540,7 +476,6 @@ def test_cache_summary(ledger: Ledger) -> None:
     ledger.record_discovered(
         "a.csv",
         table_name="options",
-        sha256="aaa",
         size_bytes=100,
         provider="schwab",
         symbol="SPX",
@@ -550,7 +485,6 @@ def test_cache_summary(ledger: Ledger) -> None:
     ledger.record_discovered(
         "b.csv",
         table_name="options",
-        sha256="bbb",
         size_bytes=200,
         provider="schwab",
         symbol="AAPL",

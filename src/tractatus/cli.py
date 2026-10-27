@@ -408,7 +408,6 @@ def catalog_sync_ledger(
             ledger.record_discovered(
                 path=relative_path,
                 table_name=table,
-                sha256="",
                 size_bytes=task.file.file_size_in_bytes,
                 provider=provider,
                 symbol=root,

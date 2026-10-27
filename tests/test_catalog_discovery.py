@@ -41,7 +41,6 @@ def test_discover_finds_csv(tmp_path: Path) -> None:
         assert f.provider == "schwab"
         assert f.sample_date == date(2026, 6, 25)
         assert f.size_bytes > 0
-        assert len(f.sha256) == 64
         assert f.file_format == "csv"
         assert f.metadata.get("expiration") == "2026-07-18"
 
