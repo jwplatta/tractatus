@@ -81,8 +81,9 @@ class PublishResult:
 class Publisher:
     """Discover, normalize, and append data files to an Iceberg table."""
 
-    def __init__(self, config: CatalogConfig) -> None:
+    def __init__(self, config: CatalogConfig, verbose: bool = False) -> None:
         self._config = config
+        self._verbose = verbose
         self._ledger = Ledger(config.database_url)
         self._store = self._build_store()
         self._cache_client = self._build_cache_client()
@@ -212,7 +213,7 @@ class Publisher:
             total=date_range_days,
             desc=f"discover {table_name}",
             unit="day",
-            disable=date_range_days is None,
+            disable=not self._verbose,
         ) as progress:
             for scan_date, day_files in progress:
                 for f in day_files:
@@ -586,7 +587,9 @@ class Publisher:
         root_col = "option_root" if table_name == "options" else "symbol"
         cached_count = 0
 
-        for scan_date in tqdm(dates_to_scan, desc=f"cache {table_name}", unit="day"):
+        for scan_date in tqdm(
+            dates_to_scan, desc=f"cache {table_name}", unit="day", disable=not self._verbose
+        ):
             if scan_date is not None:
                 day_filter = (
                     f"{date_col} >= '{scan_date.isoformat()}T00:00:00+00:00'"

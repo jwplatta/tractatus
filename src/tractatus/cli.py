@@ -237,6 +237,7 @@ def catalog_publish(
             "--cache/--no-cache", help="Write parquet artifacts to MinIO cache after publish."
         ),
     ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show progress bars.")] = False,
 ) -> None:
     """Normalize and commit discovered files to an Iceberg table.
 
@@ -249,7 +250,7 @@ def catalog_publish(
     parsed_before = date.fromisoformat(before) if before else None
 
     config = CatalogConfig.load()
-    publisher = Publisher(config)
+    publisher = Publisher(config, verbose=verbose)
     try:
         result = publisher.run(
             table_name=table,
@@ -283,6 +284,7 @@ def catalog_discover(
     before: Annotated[
         str | None, typer.Option("--before", help="Only include sample_date < DATE (YYYY-MM-DD).")
     ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show progress bars.")] = False,
 ) -> None:
     """Scan MinIO for data files and record them in the ledger.
 
@@ -295,7 +297,7 @@ def catalog_discover(
     parsed_before = date.fromisoformat(before) if before else None
 
     config = CatalogConfig.load()
-    publisher = Publisher(config)
+    publisher = Publisher(config, verbose=verbose)
     try:
         discovered = publisher._discover(
             table_name=table,
