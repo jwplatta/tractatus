@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Root discovery lists only top-level intraday index files instead of recursively enumerating snapshot objects.
+
+### Added
+- CacheReader source inventories with remote revisions, task-owned public query connections, and projected daily nearest-DTE option snapshots for dashboard caches.
+
 All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
