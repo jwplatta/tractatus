@@ -1,6 +1,6 @@
-"""Unified data reader for MinIO and Iceberg lakehouse."""
+"""Data reader for the tractatus-lakehouse MinIO cache."""
 
 from tractatus.reader.config import ReaderConfig
-from tractatus.reader.reader import Reader
+from tractatus.reader.reader import CacheReader
 
-__all__ = ["Reader", "ReaderConfig"]
+__all__ = ["CacheReader", "ReaderConfig"]

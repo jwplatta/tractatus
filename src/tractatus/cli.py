@@ -22,7 +22,7 @@ from tractatus.catalog import CatalogConfig, Ledger, Publisher
 from tractatus.catalog.discovery import _parse_options
 from tractatus.config import TractatusConfig, config_template, default_config_path
 from tractatus.logging import setup_logging
-from tractatus.reader import Reader
+from tractatus.reader import CacheReader
 
 load_dotenv()
 
@@ -142,7 +142,7 @@ def data_pull_options(
     except ValueError as exc:
         raise typer.BadParameter("DATE must use YYYY-MM-DD") from exc
     try:
-        path = Reader().get_option_parquet(root, parsed_date, provider=provider)
+        path = CacheReader().get_option_parquet(root, parsed_date, provider=provider)
     except FileNotFoundError:
         typer.echo(f"No published sample for {root} on {parsed_date.isoformat()}", err=True)
         raise typer.Exit(1) from None
@@ -192,7 +192,7 @@ def verify() -> None:
     if not (root / "research" / "smoke_backtest.py").exists():
         raise typer.BadParameter("run verify from a generated research project")
     config = TractatusConfig.load(project_dir=root)
-    reader = Reader()
+    reader = CacheReader()
     # The maintained fixture is intentionally configured by the research project/environment.
     fixture_root = os.environ.get("TRACTATUS_SMOKE_ROOT", "SPXW")
     fixture_date = date.fromisoformat(os.environ.get("TRACTATUS_SMOKE_DATE", "2026-01-02"))

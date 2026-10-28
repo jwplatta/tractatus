@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class MinIOStore:
-    """S3-compatible object store client for both intraday and historical buckets."""
+    """S3-compatible object store client for MinIO (intraday bucket)."""
 
     def __init__(self, cfg: ReaderConfig) -> None:
         self._cfg = cfg
@@ -41,8 +39,8 @@ class MinIOStore:
         return self._cfg.minio_intraday_bucket
 
     @property
-    def historical_bucket(self) -> str:
-        return self._cfg.minio_historical_bucket
+    def lakehouse_bucket(self) -> str:
+        return self._cfg.minio_lakehouse_bucket
 
     def get_object(self, bucket: str, key: str) -> bytes:
         resp = self._s3.get_object(Bucket=bucket, Key=key)
@@ -86,20 +84,6 @@ class MinIOStore:
         data = self.get_object(bucket, key)
         content = data.decode("utf-8")
         return pd.read_csv(StringIO(content), dtype=dtypes)  # type: ignore[arg-type]
-
-    def download_to_local(self, bucket: str, key: str, local_path: Path) -> Path:
-        """Download an object to a local file atomically."""
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=f".{local_path.name}.", suffix=".tmp", dir=local_path.parent
-        )
-        os.close(fd)
-        try:
-            self._s3.download_file(bucket, key, tmp)
-            os.replace(tmp, local_path)
-        finally:
-            Path(tmp).unlink(missing_ok=True)
-        return local_path
 
     def upload_from_local(self, bucket: str, key: str, local_path: Path) -> None:
         """Upload a local file to the store."""
