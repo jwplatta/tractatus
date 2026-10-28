@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.transforms import MonthTransform
+from pyiceberg.transforms import IdentityTransform, MonthTransform
 from pyiceberg.types import (
     BooleanType,
     DateType,
@@ -73,11 +73,17 @@ OPTIONS_TABLE = TableDef(
     ),
     partition_spec=PartitionSpec(
         PartitionField(
-            source_id=31,
+            source_id=44,
             field_id=1000,
+            transform=IdentityTransform(),
+            name="option_root",
+        ),
+        PartitionField(
+            source_id=31,
+            field_id=1001,
             transform=MonthTransform(),
             name="sampled_at_month",
-        )
+        ),
     ),
     sort_keys=[
         "sampled_at",
