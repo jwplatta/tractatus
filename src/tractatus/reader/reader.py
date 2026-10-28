@@ -1,4 +1,4 @@
-"""DataReader — unified facade for reading market data from MinIO and Iceberg."""
+"""Reader — unified façade for reading market data from MinIO and Iceberg."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 
 import duckdb
 import pandas as pd
-import pyarrow.parquet as pq
 
 from tractatus.reader.config import ReaderConfig
 from tractatus.reader.iceberg_store import IcebergStore
@@ -23,51 +22,57 @@ logger = logging.getLogger(__name__)
 _DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
 
 
-class DataReader:
-    """Read market data from MinIO (intraday + historical) with Iceberg fallback."""
+class Reader:
+    """Read market data from the lakehouse.
+
+    MinIO historical bucket is the authoritative source for options and candles.
+    Iceberg (via Glue) is the authoritative source for level_one, order_book, and fundamentals.
+    Intraday MinIO bucket serves live/current data.
+    """
 
     def __init__(
         self,
         cfg: ReaderConfig | None = None,
-        query_conn: duckdb.DuckDBPyConnection | None = None,
+        conn: duckdb.DuckDBPyConnection | None = None,
     ) -> None:
         self._cfg = cfg or ReaderConfig.load()
         self._minio = MinIOStore(self._cfg)
         self._iceberg = IcebergStore(self._cfg)
-        self._query = OptionsQueryClient(query_conn)
+        self._query = OptionsQueryClient(conn)
 
     @property
     def options_query(self) -> OptionsQueryClient:
         return self._query
 
     # ------------------------------------------------------------------
-    # Options — intraday (tickrake bucket)
+    # Intraday (live) — reads from intraday MinIO bucket
     # ------------------------------------------------------------------
 
     def list_roots(self, provider: str = "schwab") -> list[str]:
         """List option roots available in the intraday MinIO index."""
         prefix = f"intraday/{provider}/"
-        try:
-            keys = self._minio.list_keys(self._minio.intraday_bucket, prefix)
-        except Exception as exc:
-            logger.debug("list_roots(%s): %s", provider, exc)
-            return []
+        keys = self._minio.list_keys(self._minio.intraday_bucket, prefix)
         roots: list[str] = []
         for key in keys:
             if key.endswith(".json"):
-                stem = key[len(prefix) :].removesuffix(".json")
+                stem = key[len(prefix):].removesuffix(".json")
                 if stem and "/" not in stem:
                     roots.append(stem)
         return sorted(roots)
 
     def fetch_intraday_index(self, root: str, provider: str = "schwab") -> dict[str, Any]:
-        """Fetch the intraday index JSON for a root from MinIO."""
+        """Fetch the intraday index JSON for a root."""
         key = f"intraday/{provider}/{root}.json"
-        return self._minio.get_json(self._minio.intraday_bucket, key)
+        data = self._minio.get_object(self._minio.intraday_bucket, key)
+        import json
+        return json.loads(data)
 
     def intraday_updated_at(self, root: str, provider: str = "schwab") -> datetime | None:
         """Return the updated_at timestamp from the intraday index, or None."""
-        index = self.fetch_intraday_index(root, provider)
+        try:
+            index = self.fetch_intraday_index(root, provider)
+        except Exception:
+            return None
         raw = index.get("updated_at")
         if not raw:
             return None
@@ -86,10 +91,7 @@ class DataReader:
         end_exp: date,
         provider: str = "schwab",
     ) -> dict[date, str]:
-        """Return {expiry: s3_uri} for expirations in [start_exp, end_exp].
-
-        Tries the latest/ prefix listing first, falls back to the index JSON.
-        """
+        """Return {expiry: s3_uri} for expirations in [start_exp, end_exp]."""
         result = self._list_latest_uris(root, start_exp, end_exp, provider)
         if not result:
             index = self.fetch_intraday_index(root, provider)
@@ -129,140 +131,217 @@ class DataReader:
         return df
 
     # ------------------------------------------------------------------
-    # Options — historical (tickrake-historical bucket, Iceberg fallback)
+    # Historical options — reads from tickrake-historical MinIO bucket
     # ------------------------------------------------------------------
 
-    def list_sample_dates(self, root: str, provider: str = "schwab") -> list[date]:
-        """List available sample dates for a root from the historical manifest."""
-        manifest = self._minio.get_json(self._minio.historical_bucket, "manifests/options.json")
+    def list_option_sample_dates(
+        self, root: str, provider: str = "schwab"
+    ) -> list[date]:
+        """List available sample dates for a root from the MinIO historical bucket."""
+        prefix = f"options/{provider}/"
+        keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
         dates: set[date] = set()
-        for f in manifest.get("files", []):
-            key: str = f.get("key", "")
-            if key.startswith(f"options/{provider}/") and f"/{root}_samples_" in key:
+        for key in keys:
+            if f"/{root}_samples_" in key:
                 m = _DATE_DIR_RE.search(key)
                 if m:
                     dates.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
-        if not dates:
-            dates = self._list_sample_dates_from_keys(root, provider)
         return sorted(dates)
 
-    def get_parquet(
+    def get_option_parquet(
         self,
         root: str,
         sample_date: date,
         provider: str = "schwab",
-    ) -> Path | None:
-        """Resolve a historical options parquet to a local cached path.
+    ) -> Path:
+        """Return local path to a historical options parquet, downloading if needed.
 
-        Resolution order:
-        1. Local cache
-        2. tickrake-historical MinIO bucket
-        3. Iceberg lakehouse (with cache-through to MinIO + local)
+        Raises FileNotFoundError if the file is not in the MinIO historical bucket.
         """
-        local_path = self._local_parquet_path(root, sample_date, provider)
-        if local_path.exists():
-            return local_path
+        local = self._local_parquet_path(root, sample_date, provider)
+        if local.exists():
+            return local
+        key = self._historical_parquet_key(root, sample_date, provider)
+        if not self._minio.head_object(self._minio.historical_bucket, key):
+            raise FileNotFoundError(
+                f"No parquet for {root}/{sample_date} under {self._minio.historical_bucket}/{key}"
+            )
+        return self._minio.download_to_local(self._minio.historical_bucket, key, local)
 
-        minio_key = self._historical_parquet_key(root, sample_date, provider)
-        if self._try_download_from_minio(minio_key, local_path):
-            return local_path
-
-        if self._try_fetch_from_iceberg(root, sample_date, provider, local_path):
-            self._cache_to_minio(minio_key, local_path)
-            return local_path
-
-        return None
-
-    def ensure_parquet_range(
+    def ensure_option_parquets(
         self,
         root: str,
-        start_date: date,
-        end_date: date,
-        provider: str = "schwab",
-    ) -> str:
-        """Ensure parquets for a date range are cached locally. Returns a glob pattern."""
-        dates = self.list_sample_dates(root, provider)
-        for d in dates:
-            if start_date <= d <= end_date:
-                self.get_parquet(root, d, provider)
-        cache_base = self._cfg.cache_dir / "options" / provider
-        return str(cache_base / "**" / f"{root}_samples_*.parquet")
-
-    def ensure_parquet_files(
-        self,
-        root: str,
-        start_date: date,
-        end_date: date,
+        after: date,
+        before: date,
         provider: str = "schwab",
     ) -> list[str]:
-        """Ensure parquets for a date range are cached and return their paths.
-
-        Unlike :meth:`ensure_parquet_range` (which returns a glob), this returns
-        only the files that fall within [start_date, end_date].  Passing the
-        result to :class:`OptionsQueryClient` lookback methods avoids scanning
-        unrelated parquet files.
-        """
-        dates = self.list_sample_dates(root, provider)
+        """Download parquets in [after, before] to local cache. Returns local file paths."""
         paths: list[str] = []
-        for d in dates:
-            if start_date <= d <= end_date:
-                p = self.get_parquet(root, d, provider)
-                if p is not None:
+        for d in self.list_option_sample_dates(root, provider):
+            if after <= d <= before:
+                try:
+                    p = self.get_option_parquet(root, d, provider)
                     paths.append(str(p))
+                except FileNotFoundError:
+                    logger.warning("Missing parquet for %s/%s — skipping", root, d)
         return paths
 
     # ------------------------------------------------------------------
-    # Candles
+    # High-level read methods
     # ------------------------------------------------------------------
 
-    def load_candles(
+    def options(
         self,
-        symbol: str,
-        frequency: str,
-        provider: str = "schwab",
-        start: date | None = None,
-        end: date | None = None,
+        provider: str,
+        after: date,
+        before: date,
+        roots: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Load candle data, trying intraday bucket first then historical."""
-        df = self._try_load_intraday_candles(symbol, frequency, provider)
-        if df is None:
-            df = self._try_load_historical_candles(symbol, frequency, provider)
-        if df is None:
-            df = self._try_load_iceberg_candles(symbol, frequency, provider)
-        if df is None:
-            raise FileNotFoundError(f"No candle data for {symbol}/{frequency}/{provider}")
+        """Load historical options data for one or more roots across a date range.
 
-        if "datetime" in df.columns:
-            tz = df["datetime"].dt.tz
-            if start is not None:
-                start_ts = pd.Timestamp(start, tz="UTC") if tz is not None else pd.Timestamp(start)
-                df = df[df["datetime"] >= start_ts]
-            if end is not None:
-                end_ts = pd.Timestamp(end, tz="UTC") if tz is not None else pd.Timestamp(end)
-                df = df[df["datetime"] <= end_ts]
-        return df.reset_index(drop=True)
+        Returns a concatenated DataFrame. Uses local parquet cache backed by MinIO.
+        """
+        if roots is None:
+            roots = self._list_option_roots(provider)
+        frames: list[pd.DataFrame] = []
+        for root in roots:
+            paths = self.ensure_option_parquets(root, after, before, provider)
+            if not paths:
+                continue
+            frames.append(pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
 
-    def list_candle_frequencies(self, symbol: str, provider: str = "schwab") -> list[str]:
-        """Return candle frequencies available for a symbol from the intraday index."""
-        index = self.fetch_intraday_index(symbol, provider)
-        candles = index.get("candles", {})
-        files: list[dict[str, Any]] = candles.get("files", [])
-        return sorted({str(f["frequency"]) for f in files})
+    def candles(
+        self,
+        provider: str,
+        symbols: list[str],
+        frequency: str = "1min",
+        after: date | None = None,
+        before: date | None = None,
+    ) -> pd.DataFrame:
+        """Load candle data for one or more symbols.
+
+        Reads from the MinIO historical bucket first, falls back to the intraday bucket.
+        Raises FileNotFoundError if no data is found for a symbol.
+        """
+        frames: list[pd.DataFrame] = []
+        for symbol in symbols:
+            df = self._load_historical_candles(symbol, frequency, provider)
+            if df is None:
+                df = self._load_intraday_candles(symbol, frequency, provider)
+            if df is None:
+                raise FileNotFoundError(
+                    f"No candle data for {symbol}/{frequency}/{provider}"
+                )
+            if after is not None and "datetime" in df.columns:
+                tz = df["datetime"].dt.tz
+                after_ts = pd.Timestamp(after, tz="UTC") if tz is not None else pd.Timestamp(after)
+                df = df[df["datetime"] >= after_ts]
+            if before is not None and "datetime" in df.columns:
+                tz = df["datetime"].dt.tz
+                before_ts = pd.Timestamp(before, tz="UTC") if tz is not None else pd.Timestamp(before)
+                df = df[df["datetime"] <= before_ts]
+            frames.append(df.reset_index(drop=True))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+
+    def level_one(
+        self,
+        provider: str,
+        after: date,
+        before: date,
+        symbols: list[str] | None = None,
+        table: str = "level_one_equities",
+    ) -> pd.DataFrame:
+        """Load level-one quote data from Iceberg."""
+        return self._iceberg_read(table, provider, after, before, symbols)
+
+    def order_book(
+        self,
+        provider: str,
+        after: date,
+        before: date,
+        symbols: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Load order book data from Iceberg."""
+        return self._iceberg_read("order_book", provider, after, before, symbols)
+
+    def fundamentals(
+        self,
+        provider: str,
+        after: date,
+        before: date,
+        symbols: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Load fundamentals data from Iceberg."""
+        return self._iceberg_read("fundamentals", provider, after, before, symbols)
 
     # ------------------------------------------------------------------
-    # Internal — intraday helpers
+    # Internal helpers
     # ------------------------------------------------------------------
+
+    def _list_option_roots(self, provider: str) -> list[str]:
+        prefix = f"options/{provider}/"
+        keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
+        roots: set[str] = set()
+        for key in keys:
+            # keys look like: options/{provider}/YYYY/MM/DD/{ROOT}_samples_{date}.parquet
+            filename = key.rsplit("/", 1)[-1]
+            if "_samples_" in filename and filename.endswith(".parquet"):
+                root = filename.split("_samples_")[0]
+                roots.add(root)
+        return sorted(roots)
+
+    def _iceberg_read(
+        self,
+        table: str,
+        provider: str,
+        after: date,
+        before: date,
+        symbols: list[str] | None,
+    ) -> pd.DataFrame:
+        parts = [
+            f"provider = '{provider}'",
+            f"sample_date >= '{after.isoformat()}'",
+            f"sample_date <= '{before.isoformat()}'",
+        ]
+        if symbols:
+            quoted = ", ".join(f"'{s}'" for s in symbols)
+            parts.append(f"symbol IN ({quoted})")
+        row_filter = " AND ".join(parts)
+        return self._iceberg.scan_to_dataframe(table, row_filter=row_filter)
+
+    def _local_parquet_path(self, root: str, sample_date: date, provider: str) -> Path:
+        return (
+            self._cfg.cache_dir
+            / "options"
+            / provider
+            / f"{sample_date.year:04d}"
+            / f"{sample_date.month:02d}"
+            / f"{sample_date.day:02d}"
+            / f"{root}_samples_{sample_date.isoformat()}.parquet"
+        )
+
+    @staticmethod
+    def _historical_parquet_key(root: str, sample_date: date, provider: str) -> str:
+        return (
+            f"options/{provider}"
+            f"/{sample_date.year:04d}/{sample_date.month:02d}/{sample_date.day:02d}"
+            f"/{root}_samples_{sample_date.isoformat()}.parquet"
+        )
 
     @staticmethod
     def _intraday_latest_files(index: dict[str, Any]) -> list[dict[str, Any]]:
         option_chains: dict[str, Any] = index.get("option_chains", {})
         latest: dict[str, Any] = option_chains.get("latest", {})
-        files: list[dict[str, Any]] = (
+        return (
             latest.get("files")
             or option_chains.get("files")
             or index.get("intraday", {}).get("files", [])
         )
-        return files
 
     def _list_latest_uris(
         self,
@@ -292,111 +371,15 @@ class DataReader:
                 result[exp] = f"s3://{bucket}/{key}"
         return result
 
-    # ------------------------------------------------------------------
-    # Internal — historical helpers
-    # ------------------------------------------------------------------
-
-    def _local_parquet_path(self, root: str, sample_date: date, provider: str) -> Path:
-        return (
-            self._cfg.cache_dir
-            / "options"
-            / provider
-            / f"{sample_date.year:04d}"
-            / f"{sample_date.month:02d}"
-            / f"{sample_date.day:02d}"
-            / f"{root}_samples_{sample_date.isoformat()}.parquet"
-        )
-
-    @staticmethod
-    def _historical_parquet_key(root: str, sample_date: date, provider: str) -> str:
-        return (
-            f"options/{provider}"
-            f"/{sample_date.year:04d}/{sample_date.month:02d}/{sample_date.day:02d}"
-            f"/{root}_samples_{sample_date.isoformat()}.parquet"
-        )
-
-    def _try_download_from_minio(self, key: str, local_path: Path) -> bool:
-        try:
-            if not self._minio.head_object(self._minio.historical_bucket, key):
-                return False
-            self._minio.download_to_local(self._minio.historical_bucket, key, local_path)
-            return True
-        except Exception as exc:
-            logger.debug("_try_download_from_minio(%s): %s", key, exc)
-            return False
-
-    def _try_fetch_from_iceberg(
-        self,
-        root: str,
-        sample_date: date,
-        provider: str,
-        local_path: Path,
-    ) -> bool:
-        if not self._cfg.iceberg_bucket:
-            return False
-        try:
-            row_filter = (
-                f"symbol == '{root}'"
-                f" AND provider == '{provider}'"
-                f" AND sampled_at >= '{sample_date.isoformat()}T00:00:00+00:00'"
-                f" AND sampled_at <= '{sample_date.isoformat()}T23:59:59+00:00'"
-            )
-            arrow_table = self._iceberg.scan("options", row_filter=row_filter)
-            if arrow_table.num_rows == 0:
-                return False
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            pq.write_table(arrow_table, local_path)
-            return True
-        except Exception as exc:
-            logger.debug("_try_fetch_from_iceberg(%s, %s): %s", root, sample_date, exc)
-            return False
-
-    def _cache_to_minio(self, key: str, local_path: Path) -> None:
-        try:
-            self._minio.upload_from_local(self._minio.historical_bucket, key, local_path)
-        except Exception as exc:
-            logger.debug("_cache_to_minio(%s): %s", key, exc)
-
-    def _list_sample_dates_from_keys(self, root: str, provider: str) -> set[date]:
-        prefix = f"options/{provider}/"
-        try:
-            keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
-        except Exception:
-            return set()
-        dates: set[date] = set()
-        for key in keys:
-            if f"/{root}_samples_" in key:
-                m = _DATE_DIR_RE.search(key)
-                if m:
-                    dates.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
-        return dates
-
-    # ------------------------------------------------------------------
-    # Internal — candle helpers
-    # ------------------------------------------------------------------
-
-    def _try_load_intraday_candles(
+    def _load_historical_candles(
         self, symbol: str, frequency: str, provider: str
     ) -> pd.DataFrame | None:
-        key = f"intraday/{provider}/candles/{frequency}/{symbol}.csv"
-        try:
-            df = self._minio.get_csv(self._minio.intraday_bucket, key)
-            if "datetime" in df.columns:
-                df["datetime"] = pd.to_datetime(df["datetime"])
-            return df
-        except Exception:
-            return None
-
-    def _try_load_historical_candles(
-        self, symbol: str, frequency: str, provider: str
-    ) -> pd.DataFrame | None:
-        """Try loading candle parquet from tickrake-historical bucket."""
         prefix = f"candles/{provider}/{frequency}/"
         try:
             keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
         except Exception:
             return None
-        matching = [k for k in keys if f"/{symbol}.parquet" in k]
+        matching = [k for k in keys if k.endswith(f"/{symbol}.parquet")]
         if not matching:
             return None
         frames: list[pd.DataFrame] = []
@@ -405,7 +388,8 @@ class DataReader:
             if not local.exists():
                 try:
                     self._minio.download_to_local(self._minio.historical_bucket, key, local)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Failed to download candle %s: %s", key, exc)
                     continue
             frames.append(pd.read_parquet(local))
         if not frames:
@@ -416,22 +400,14 @@ class DataReader:
             df = df.sort_values("datetime").reset_index(drop=True)
         return df
 
-    def _try_load_iceberg_candles(
+    def _load_intraday_candles(
         self, symbol: str, frequency: str, provider: str
     ) -> pd.DataFrame | None:
-        if not self._cfg.iceberg_bucket:
-            return None
+        key = f"intraday/{provider}/candles/{frequency}/{symbol}.csv"
         try:
-            row_filter = (
-                f"symbol == '{symbol}' AND provider == '{provider}' AND interval == '{frequency}'"
-            )
-            df = self._iceberg.scan_to_dataframe("candles", row_filter=row_filter)
-            if df.empty:
-                return None
+            df = self._minio.get_csv(self._minio.intraday_bucket, key)
             if "datetime" in df.columns:
                 df["datetime"] = pd.to_datetime(df["datetime"])
-                df = df.sort_values("datetime").reset_index(drop=True)
             return df
-        except Exception as exc:
-            logger.debug("_try_load_iceberg_candles(%s, %s): %s", symbol, frequency, exc)
+        except Exception:
             return None
