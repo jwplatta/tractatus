@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
 import pandas as pd
+import pyarrow.parquet as pq
 
 from tractatus.reader.config import ReaderConfig
 from tractatus.reader.iceberg_store import IcebergStore
@@ -20,7 +20,9 @@ from tractatus.tickrake.options.queries import OPTIONS_DTYPES, OptionsQueryClien
 
 logger = logging.getLogger(__name__)
 
-_DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
+
+def _next_day(d: date) -> date:
+    return d + timedelta(days=1)
 
 
 class Reader:
@@ -131,19 +133,25 @@ class Reader:
         return df
 
     # ------------------------------------------------------------------
-    # Historical options — reads from tickrake-historical MinIO bucket
+    # Historical options — reads from Iceberg lakehouse
     # ------------------------------------------------------------------
 
     def list_option_sample_dates(self, root: str, provider: str = "schwab") -> list[date]:
-        """List available sample dates for a root from the MinIO historical bucket."""
-        prefix = f"options/{provider}/"
-        keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
+        """List available sample dates for a root from the Iceberg options table."""
+        row_filter = f"option_root = '{root}' AND provider = '{provider}'"
+        arrow = self._iceberg.scan(
+            "options",
+            row_filter=row_filter,
+            selected_fields=("sampled_at",),
+        )
+        if arrow.num_rows == 0:
+            return []
+        sampled_at = arrow.column("sampled_at")
         dates: set[date] = set()
-        for key in keys:
-            if f"/{root}_samples_" in key:
-                m = _DATE_DIR_RE.search(key)
-                if m:
-                    dates.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        for ts in sampled_at.to_pylist():
+            if ts is not None:
+                d = ts.date() if hasattr(ts, "date") else ts
+                dates.add(d)
         return sorted(dates)
 
     def get_option_parquet(
@@ -152,19 +160,27 @@ class Reader:
         sample_date: date,
         provider: str = "schwab",
     ) -> Path:
-        """Return local path to a historical options parquet, downloading if needed.
+        """Return local path to a historical options parquet for one root/date.
 
-        Raises FileNotFoundError if the file is not in the MinIO historical bucket.
+        Checks local cache first. If missing, queries Iceberg and writes to cache.
+        Raises FileNotFoundError if no data exists in Iceberg for this root/date.
         """
         local = self._local_parquet_path(root, sample_date, provider)
         if local.exists():
             return local
-        key = self._historical_parquet_key(root, sample_date, provider)
-        if not self._minio.head_object(self._minio.historical_bucket, key):
+        row_filter = (
+            f"option_root = '{root}' AND provider = '{provider}'"
+            f" AND sampled_at >= '{sample_date.isoformat()}'"
+            f" AND sampled_at < '{_next_day(sample_date).isoformat()}'"
+        )
+        arrow = self._iceberg.scan("options", row_filter=row_filter)
+        if arrow.num_rows == 0:
             raise FileNotFoundError(
-                f"No parquet for {root}/{sample_date} under {self._minio.historical_bucket}/{key}"
+                f"No options data in Iceberg for {root}/{sample_date} (provider={provider})"
             )
-        return self._minio.download_to_local(self._minio.historical_bucket, key, local)
+        local.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(arrow, local)
+        return local
 
     def ensure_option_parquets(
         self,
@@ -173,7 +189,10 @@ class Reader:
         before: date,
         provider: str = "schwab",
     ) -> list[str]:
-        """Download parquets in [after, before] to local cache. Returns local file paths."""
+        """Return local parquet paths for all available dates in [after, before].
+
+        Downloads from Iceberg into local cache as needed.
+        """
         paths: list[str] = []
         for d in self.list_option_sample_dates(root, provider):
             if after <= d <= before:
@@ -181,7 +200,7 @@ class Reader:
                     p = self.get_option_parquet(root, d, provider)
                     paths.append(str(p))
                 except FileNotFoundError:
-                    logger.warning("Missing parquet for %s/%s — skipping", root, d)
+                    logger.warning("No Iceberg data for %s/%s — skipping", root, d)
         return paths
 
     # ------------------------------------------------------------------
@@ -282,16 +301,16 @@ class Reader:
     # ------------------------------------------------------------------
 
     def _list_option_roots(self, provider: str) -> list[str]:
-        prefix = f"options/{provider}/"
-        keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
-        roots: set[str] = set()
-        for key in keys:
-            # keys look like: options/{provider}/YYYY/MM/DD/{ROOT}_samples_{date}.parquet
-            filename = key.rsplit("/", 1)[-1]
-            if "_samples_" in filename and filename.endswith(".parquet"):
-                root = filename.split("_samples_")[0]
-                roots.add(root)
-        return sorted(roots)
+        arrow = self._iceberg.scan(
+            "options",
+            row_filter=f"provider = '{provider}'",
+            selected_fields=("option_root",),
+        )
+        if arrow.num_rows == 0:
+            return []
+        roots: set[str] = set(arrow.column("option_root").to_pylist())
+        roots.discard(None)
+        return sorted(roots)  # type: ignore[type-var]
 
     def _iceberg_read(
         self,
@@ -321,14 +340,6 @@ class Reader:
             / f"{sample_date.month:02d}"
             / f"{sample_date.day:02d}"
             / f"{root}_samples_{sample_date.isoformat()}.parquet"
-        )
-
-    @staticmethod
-    def _historical_parquet_key(root: str, sample_date: date, provider: str) -> str:
-        return (
-            f"options/{provider}"
-            f"/{sample_date.year:04d}/{sample_date.month:02d}/{sample_date.day:02d}"
-            f"/{root}_samples_{sample_date.isoformat()}.parquet"
         )
 
     @staticmethod
@@ -372,31 +383,8 @@ class Reader:
     def _load_historical_candles(
         self, symbol: str, frequency: str, provider: str
     ) -> pd.DataFrame | None:
-        prefix = f"candles/{provider}/{frequency}/"
-        try:
-            keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
-        except Exception:
-            return None
-        matching = [k for k in keys if k.endswith(f"/{symbol}.parquet")]
-        if not matching:
-            return None
-        frames: list[pd.DataFrame] = []
-        for key in sorted(matching):
-            local = self._cfg.cache_dir / key
-            if not local.exists():
-                try:
-                    self._minio.download_to_local(self._minio.historical_bucket, key, local)
-                except Exception as exc:
-                    logger.warning("Failed to download candle %s: %s", key, exc)
-                    continue
-            frames.append(pd.read_parquet(local))
-        if not frames:
-            return None
-        df = pd.concat(frames, ignore_index=True)
-        if "datetime" in df.columns:
-            df["datetime"] = pd.to_datetime(df["datetime"])
-            df = df.sort_values("datetime").reset_index(drop=True)
-        return df
+        # TODO: read from Iceberg candles table once data is published there
+        return None
 
     def _load_intraday_candles(
         self, symbol: str, frequency: str, provider: str
