@@ -15,9 +15,10 @@ _CACHE_DIR_DEFAULT = Path.home() / ".tractatus" / "cache"
 class ReaderConfig:
     """Connection settings for MinIO (intraday) and Iceberg lakehouse."""
 
-    # MinIO (intraday live data only)
+    # MinIO
     minio_endpoint: str
     minio_intraday_bucket: str
+    minio_lakehouse_bucket: str  # tractatus-lakehouse — pre-exported parquet cache
     minio_access_key: str
     minio_secret_key: str
 
@@ -45,6 +46,7 @@ class ReaderConfig:
         return cls(
             minio_endpoint=os.environ.get("MINIO_ENDPOINT", "http://localhost:9000"),
             minio_intraday_bucket=os.environ.get("MINIO_INTRADAY_BUCKET", "tickrake"),
+            minio_lakehouse_bucket=os.environ.get("MINIO_LAKEHOUSE_BUCKET", "tractatus-lakehouse"),
             minio_access_key=os.environ.get("MINIO_ACCESS_KEY", ""),
             minio_secret_key=os.environ.get("MINIO_SECRET_KEY", ""),
             catalog_type=catalog_type,

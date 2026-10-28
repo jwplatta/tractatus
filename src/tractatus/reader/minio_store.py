@@ -38,6 +38,10 @@ class MinIOStore:
     def intraday_bucket(self) -> str:
         return self._cfg.minio_intraday_bucket
 
+    @property
+    def lakehouse_bucket(self) -> str:
+        return self._cfg.minio_lakehouse_bucket
+
     def get_object(self, bucket: str, key: str) -> bytes:
         resp = self._s3.get_object(Bucket=bucket, Key=key)
         return resp["Body"].read()  # type: ignore[return-value]

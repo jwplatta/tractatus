@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ from tractatus.reader.minio_store import MinIOStore
 from tractatus.tickrake.options.queries import OPTIONS_DTYPES, OptionsQueryClient
 
 logger = logging.getLogger(__name__)
+
+_DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
 
 
 def _next_day(d: date) -> date:
@@ -137,21 +140,37 @@ class Reader:
     # ------------------------------------------------------------------
 
     def list_option_sample_dates(self, root: str, provider: str = "schwab") -> list[date]:
-        """List available sample dates for a root from the Iceberg options table."""
+        """List available sample dates for a root.
+
+        Checks tractatus-lakehouse (pre-exported parquet cache) first via key listing.
+        Falls back to scanning the Iceberg options table if the cache has nothing.
+        """
+        prefix = f"options/{provider}/"
+        try:
+            keys = self._minio.list_keys(self._minio.lakehouse_bucket, prefix)
+            dates: set[date] = set()
+            for key in keys:
+                if f"/{root}_samples_" not in key:
+                    continue
+                m = _DATE_DIR_RE.search(key)
+                if m:
+                    dates.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+            if dates:
+                return sorted(dates)
+        except Exception as exc:
+            logger.debug("lakehouse key listing failed for %s/%s: %s", root, provider, exc)
+
+        # Fall back to Iceberg scan
         row_filter = f"option_root = '{root}' AND provider = '{provider}'"
         arrow = self._iceberg.scan(
-            "options",
-            row_filter=row_filter,
-            selected_fields=("sampled_at",),
+            "options", row_filter=row_filter, selected_fields=("sampled_at",)
         )
         if arrow.num_rows == 0:
             return []
-        sampled_at = arrow.column("sampled_at")
-        dates: set[date] = set()
-        for ts in sampled_at.to_pylist():
+        dates = set()
+        for ts in arrow.column("sampled_at").to_pylist():
             if ts is not None:
-                d = ts.date() if hasattr(ts, "date") else ts
-                dates.add(d)
+                dates.add(ts.date() if hasattr(ts, "date") else ts)
         return sorted(dates)
 
     def get_option_parquet(
@@ -162,12 +181,22 @@ class Reader:
     ) -> Path:
         """Return local path to a historical options parquet for one root/date.
 
-        Checks local cache first. If missing, queries Iceberg and writes to cache.
-        Raises FileNotFoundError if no data exists in Iceberg for this root/date.
+        Checks local filesystem cache, then tractatus-lakehouse, then Iceberg.
+        Raises FileNotFoundError if not found in any source.
         """
         local = self._local_parquet_path(root, sample_date, provider)
         if local.exists():
             return local
+
+        # Try tractatus-lakehouse (pre-exported flat parquet)
+        key = self._lakehouse_parquet_key(root, sample_date, provider)
+        if self._minio.head_object(self._minio.lakehouse_bucket, key):
+            local.parent.mkdir(parents=True, exist_ok=True)
+            data = self._minio.get_object(self._minio.lakehouse_bucket, key)
+            local.write_bytes(data)
+            return local
+
+        # Fall back to Iceberg
         row_filter = (
             f"option_root = '{root}' AND provider = '{provider}'"
             f" AND sampled_at >= '{sample_date.isoformat()}'"
@@ -176,7 +205,7 @@ class Reader:
         arrow = self._iceberg.scan("options", row_filter=row_filter)
         if arrow.num_rows == 0:
             raise FileNotFoundError(
-                f"No options data in Iceberg for {root}/{sample_date} (provider={provider})"
+                f"No options data for {root}/{sample_date} (provider={provider})"
             )
         local.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(arrow, local)
@@ -330,6 +359,14 @@ class Reader:
             parts.append(f"symbol IN ({quoted})")
         row_filter = " AND ".join(parts)
         return self._iceberg.scan_to_dataframe(table, row_filter=row_filter)
+
+    @staticmethod
+    def _lakehouse_parquet_key(root: str, sample_date: date, provider: str) -> str:
+        return (
+            f"options/{provider}"
+            f"/{sample_date.year:04d}/{sample_date.month:02d}/{sample_date.day:02d}"
+            f"/{root}_samples_{sample_date.isoformat()}.parquet"
+        )
 
     def _local_parquet_path(self, root: str, sample_date: date, provider: str) -> Path:
         return (
