@@ -57,6 +57,15 @@ class MinIOStore:
         except ClientError:
             return False
 
+    def list_object_metadata(self, bucket: str, prefix: str) -> list[tuple[str, str, int]]:
+        """List keys with opaque ETag revisions and size; propagate listing failures."""
+        paginator = self._s3.get_paginator("list_objects_v2")
+        return [
+            (str(obj["Key"]), str(obj.get("ETag", "")), int(obj["Size"]))
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+            for obj in page.get("Contents", [])
+        ]
+
     def list_keys(self, bucket: str, prefix: str) -> list[str]:
         """Return all keys under prefix."""
         paginator = self._s3.get_paginator("list_objects_v2")

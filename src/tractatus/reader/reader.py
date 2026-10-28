@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -19,6 +22,16 @@ from tractatus.tickrake.options.queries import OPTIONS_DTYPES, OptionsQueryClien
 logger = logging.getLogger(__name__)
 
 _DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
+
+
+@dataclass(frozen=True)
+class OptionSource:
+    """Published historical object identity; revision is opaque, not a checksum."""
+
+    sample_date: date
+    uri: str
+    revision: str
+    size_bytes: int
 
 
 class CacheReader:
@@ -39,6 +52,87 @@ class CacheReader:
         self._cfg = cfg or ReaderConfig.load()
         self._minio = MinIOStore(self._cfg)
         self._query = OptionsQueryClient(self._configure_conn(conn, self._cfg))
+
+    @property
+    def source_namespace(self) -> tuple[str, str]:
+        """Public storage identity, without credentials."""
+        return self._cfg.minio_endpoint.rstrip("/"), self._cfg.minio_lakehouse_bucket
+
+    @contextmanager
+    def query_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        """Own a configured connection for one task; never share it across threads."""
+        with duckdb.connect() as conn:
+            self._configure_conn(conn, self._cfg)
+            conn.execute("SET threads=2")
+            conn.execute("SET memory_limit='1GB'")
+            yield conn
+
+    def list_option_sources(
+        self, root: str, after: date, before: date, provider: str = "schwab"
+    ) -> list[OptionSource]:
+        """List published sources in an inclusive range using monthly prefixes."""
+        if before < after:
+            return []
+        month = after.replace(day=1)
+        result: list[OptionSource] = []
+        while month <= before:
+            prefix = f"options/{provider}/{month.year:04d}/{month.month:02d}/"
+            for key, etag, size in self._minio.list_object_metadata(
+                self._minio.lakehouse_bucket, prefix
+            ):
+                if not key.rsplit("/", 1)[-1].startswith(f"{root}_samples_"):
+                    continue
+                match = _DATE_DIR_RE.search(key)
+                if match is None or not key.endswith(".parquet"):
+                    continue
+                day = date(*(int(v) for v in match.groups()))
+                if after <= day <= before:
+                    if not etag:
+                        raise ValueError(f"Missing object revision for {key}")
+                    result.append(
+                        OptionSource(
+                            day,
+                            f"s3://{self._minio.lakehouse_bucket}/{key}",
+                            f"{etag}:{size}",
+                            size,
+                        )
+                    )
+            month = date(month.year + (month.month == 12), month.month % 12 + 1, 1)
+        return sorted(result, key=lambda source: source.sample_date)
+
+    def option_daily_snapshots(
+        self, source: OptionSource, target_dte: int, conn: duckdb.DuckDBPyConnection
+    ) -> pd.DataFrame:
+        """Projected nearest-DTE chain at first post-10:30 and closing timestamps.
+
+        The supplied connection must belong to this task. A materialized projection
+        avoids reading the remote object separately for expiry/time discovery.
+        """
+        if target_dte < 0:
+            raise ValueError("target_dte must be nonnegative")
+        return conn.execute(
+            """
+            WITH raw AS MATERIALIZED (
+                SELECT sampled_at, expiration_date, strike, volatility, delta,
+                       contract_type, underlying_price FROM read_parquet(?)
+            ), expiry AS (
+                SELECT DISTINCT CAST(expiration_date AS DATE) AS d FROM raw
+                WHERE CAST(expiration_date AS DATE) >= CAST(? AS DATE)
+                ORDER BY abs(date_diff('day', CAST(? AS DATE), d) - ?), d LIMIT 1
+            ), chain AS MATERIALIZED (
+                SELECT raw.* FROM raw, expiry
+                WHERE CAST(raw.expiration_date AS DATE) = expiry.d
+            ), times AS (
+                SELECT min(sampled_at) FILTER (
+                    WHERE CAST(sampled_at AT TIME ZONE 'America/New_York' AS TIME)
+                          >= TIME '10:30:00') AS first_sample,
+                       max(sampled_at) AS last_sample FROM chain
+            )
+            SELECT chain.* FROM chain, times
+            WHERE sampled_at IN (first_sample, last_sample) ORDER BY sampled_at, strike
+            """,
+            [source.uri, source.sample_date, source.sample_date, target_dte],
+        ).df()
 
     @property
     def options_query(self) -> OptionsQueryClient:
