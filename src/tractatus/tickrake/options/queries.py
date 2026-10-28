@@ -113,7 +113,7 @@ class OptionsQueryClient:
         Parameters
         ----------
         parquet_path : Path
-            Local path to a cached options parquet file (from ``DataReader.get_parquet``).
+            Local path to a cached options parquet file (from ``Reader.get_option_parquet``).
         expiry : date
             Expiration date to filter on.
         sampled_at : datetime
@@ -203,7 +203,7 @@ class OptionsQueryClient:
         ----------
         parquet_glob : str | list[str] | list[Path]
             A glob pattern (``'cache/**/*.parquet'``) or an explicit list of file paths.
-            Prefer passing a file list from ``DataReader.ensure_parquet_files`` to avoid
+            Prefer passing a file list from ``Reader.ensure_option_parquets`` to avoid
             scanning unrelated parquets.
         expiry_range : tuple[date, date]
             ``(start, end)`` expiration date range (inclusive).

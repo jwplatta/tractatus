@@ -22,7 +22,7 @@ from tractatus.catalog import CatalogConfig, Ledger, Publisher
 from tractatus.catalog.discovery import _parse_options
 from tractatus.config import TractatusConfig, config_template, default_config_path
 from tractatus.logging import setup_logging
-from tractatus.reader import DataReader
+from tractatus.reader import Reader
 
 load_dotenv()
 
@@ -141,10 +141,11 @@ def data_pull_options(
         parsed_date = date.fromisoformat(sample_date)
     except ValueError as exc:
         raise typer.BadParameter("DATE must use YYYY-MM-DD") from exc
-    path = DataReader().get_parquet(root, parsed_date, provider=provider)
-    if path is None:
+    try:
+        path = Reader().get_option_parquet(root, parsed_date, provider=provider)
+    except FileNotFoundError:
         typer.echo(f"No published sample for {root} on {parsed_date.isoformat()}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     typer.echo(path)
 
 
@@ -191,16 +192,17 @@ def verify() -> None:
     if not (root / "research" / "smoke_backtest.py").exists():
         raise typer.BadParameter("run verify from a generated research project")
     config = TractatusConfig.load(project_dir=root)
-    reader = DataReader()
+    reader = Reader()
     # The maintained fixture is intentionally configured by the research project/environment.
     fixture_root = os.environ.get("TRACTATUS_SMOKE_ROOT", "SPXW")
     fixture_date = date.fromisoformat(os.environ.get("TRACTATUS_SMOKE_DATE", "2026-01-02"))
-    parquet = reader.get_parquet(fixture_root, fixture_date)
-    if parquet is None:
+    try:
+        parquet = reader.get_option_parquet(fixture_root, fixture_date)
+    except FileNotFoundError:
         typer.echo(
             "Packaged smoke dataset is unavailable from the configured Tickrake archive", err=True
         )
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     import pandas as pd  # noqa: PLC0415
     from research.smoke_backtest import run  # type: ignore[import-not-found]  # noqa: PLC0415
 
