@@ -1,11 +1,11 @@
-"""Reader — unified façade for reading market data from MinIO and Iceberg."""
+"""CacheReader — reads market data from the tractatus-lakehouse MinIO cache bucket."""
 
 from __future__ import annotations
 
 import json
 import logging
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,7 +13,6 @@ import duckdb
 import pandas as pd
 
 from tractatus.reader.config import ReaderConfig
-from tractatus.reader.iceberg_store import IcebergStore
 from tractatus.reader.minio_store import MinIOStore
 from tractatus.tickrake.options.queries import OPTIONS_DTYPES, OptionsQueryClient
 
@@ -22,18 +21,14 @@ logger = logging.getLogger(__name__)
 _DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
 
 
-def _next_day(d: date) -> date:
-    return d + timedelta(days=1)
+class CacheReader:
+    """Read market data from the tractatus-lakehouse MinIO cache bucket.
 
+    Options parquets live at:
+        tractatus-lakehouse/options/{provider}/YYYY/MM/DD/{root}_samples_{date}.parquet
 
-class Reader:
-    """Read market data from the lakehouse.
-
-    tractatus-lakehouse (MinIO) is the primary source for pre-exported options parquets.
-    tractatus-iceberg (Iceberg) is the fallback for options and the source for level_one,
-    order_book, and fundamentals.
-    Intraday MinIO bucket serves live/current data.
-    DuckDB reads options parquets directly via httpfs (s3:// URIs) — no local downloads.
+    DuckDB reads s3:// URIs directly via httpfs — no local downloads.
+    Intraday data is read from the intraday MinIO bucket.
     """
 
     def __init__(
@@ -43,12 +38,76 @@ class Reader:
     ) -> None:
         self._cfg = cfg or ReaderConfig.load()
         self._minio = MinIOStore(self._cfg)
-        self._iceberg = IcebergStore(self._cfg)
         self._query = OptionsQueryClient(self._configure_conn(conn, self._cfg))
 
     @property
     def options_query(self) -> OptionsQueryClient:
         return self._query
+
+    # ------------------------------------------------------------------
+    # Historical options — tractatus-lakehouse cache, s3:// URIs only
+    # ------------------------------------------------------------------
+
+    def list_option_roots(self, provider: str = "schwab") -> list[str]:
+        """List available option roots from tractatus-lakehouse key listing."""
+        prefix = f"options/{provider}/"
+        keys = self._minio.list_keys(self._minio.lakehouse_bucket, prefix)
+        roots: set[str] = set()
+        for key in keys:
+            filename = key.rsplit("/", 1)[-1]
+            if filename.endswith(".parquet") and "_samples_" in filename:
+                root = filename.split("_samples_")[0]
+                if root:
+                    roots.add(root)
+        return sorted(roots)
+
+    def list_option_sample_dates(self, root: str, provider: str = "schwab") -> list[date]:
+        """List available sample dates for a root from tractatus-lakehouse key listing."""
+        prefix = f"options/{provider}/"
+        keys = self._minio.list_keys(self._minio.lakehouse_bucket, prefix)
+        dates: set[date] = set()
+        for key in keys:
+            if f"/{root}_samples_" not in key:
+                continue
+            m = _DATE_DIR_RE.search(key)
+            if m:
+                dates.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        return sorted(dates)
+
+    def get_option_parquet(
+        self,
+        root: str,
+        sample_date: date,
+        provider: str = "schwab",
+    ) -> str:
+        """Return an s3:// URI for a historical options parquet from tractatus-lakehouse.
+
+        Raises FileNotFoundError if the parquet is not in the cache.
+        DuckDB reads the returned URI directly via httpfs — no local download.
+        """
+        key = self._lakehouse_parquet_key(root, sample_date, provider)
+        if self._minio.head_object(self._minio.lakehouse_bucket, key):
+            return f"s3://{self._minio.lakehouse_bucket}/{key}"
+        raise FileNotFoundError(
+            f"No options parquet in cache for {root}/{sample_date} (provider={provider})"
+        )
+
+    def ensure_option_parquets(
+        self,
+        root: str,
+        after: date,
+        before: date,
+        provider: str = "schwab",
+    ) -> list[str]:
+        """Return s3:// URIs for all available dates in [after, before]."""
+        uris: list[str] = []
+        for d in self.list_option_sample_dates(root, provider):
+            if after <= d <= before:
+                try:
+                    uris.append(self.get_option_parquet(root, d, provider))
+                except FileNotFoundError:
+                    logger.warning("No parquet for %s/%s — skipping", root, d)
+        return uris
 
     # ------------------------------------------------------------------
     # Intraday (live) — reads from intraday MinIO bucket
@@ -136,119 +195,8 @@ class Reader:
         return df
 
     # ------------------------------------------------------------------
-    # Historical options — s3:// URIs via DuckDB httpfs, no local downloads
+    # Candles — intraday bucket only for now
     # ------------------------------------------------------------------
-
-    def list_option_sample_dates(self, root: str, provider: str = "schwab") -> list[date]:
-        """List available sample dates for a root from tractatus-lakehouse key listing.
-
-        Falls back to Iceberg scan if the lakehouse has no keys for this root.
-        """
-        prefix = f"options/{provider}/"
-        try:
-            keys = self._minio.list_keys(self._minio.lakehouse_bucket, prefix)
-            dates: set[date] = set()
-            for key in keys:
-                if f"/{root}_samples_" not in key:
-                    continue
-                m = _DATE_DIR_RE.search(key)
-                if m:
-                    dates.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
-            if dates:
-                return sorted(dates)
-        except Exception as exc:
-            logger.debug("lakehouse key listing failed for %s/%s: %s", root, provider, exc)
-
-        # Fall back to Iceberg scan
-        row_filter = f"option_root = '{root}' AND provider = '{provider}'"
-        arrow = self._iceberg.scan(
-            "options", row_filter=row_filter, selected_fields=("sampled_at",)
-        )
-        if arrow.num_rows == 0:
-            return []
-        dates = set()
-        for ts in arrow.column("sampled_at").to_pylist():
-            if ts is not None:
-                dates.add(ts.date() if hasattr(ts, "date") else ts)
-        return sorted(dates)
-
-    def get_option_parquet(
-        self,
-        root: str,
-        sample_date: date,
-        provider: str = "schwab",
-    ) -> str:
-        """Return an s3:// URI for a historical options parquet.
-
-        Checks tractatus-lakehouse first. Falls back to Iceberg if not found there.
-        Raises FileNotFoundError if not found in either source.
-        DuckDB reads the returned URI directly via httpfs — no local download.
-        """
-        key = self._lakehouse_parquet_key(root, sample_date, provider)
-        if self._minio.head_object(self._minio.lakehouse_bucket, key):
-            return f"s3://{self._minio.lakehouse_bucket}/{key}"
-
-        # Fall back to Iceberg — check if any data exists for this root/date
-        row_filter = (
-            f"option_root = '{root}' AND provider = '{provider}'"
-            f" AND sampled_at >= '{sample_date.isoformat()}'"
-            f" AND sampled_at < '{_next_day(sample_date).isoformat()}'"
-        )
-        arrow = self._iceberg.scan(
-            "options", row_filter=row_filter, selected_fields=("sampled_at",)
-        )
-        if arrow.num_rows == 0:
-            raise FileNotFoundError(
-                f"No options data for {root}/{sample_date} (provider={provider})"
-            )
-        raise FileNotFoundError(
-            f"Options data for {root}/{sample_date} exists in Iceberg but not in "
-            f"tractatus-lakehouse — run the publisher to export it"
-        )
-
-    def ensure_option_parquets(
-        self,
-        root: str,
-        after: date,
-        before: date,
-        provider: str = "schwab",
-    ) -> list[str]:
-        """Return s3:// URIs for all available dates in [after, before]."""
-        uris: list[str] = []
-        for d in self.list_option_sample_dates(root, provider):
-            if after <= d <= before:
-                try:
-                    uris.append(self.get_option_parquet(root, d, provider))
-                except FileNotFoundError:
-                    logger.warning("No parquet for %s/%s — skipping", root, d)
-        return uris
-
-    # ------------------------------------------------------------------
-    # High-level read methods
-    # ------------------------------------------------------------------
-
-    def options(
-        self,
-        provider: str,
-        after: date,
-        before: date,
-        roots: list[str] | None = None,
-    ) -> pd.DataFrame:
-        """Load historical options data for one or more roots across a date range.
-
-        Returns a concatenated DataFrame. Uses local parquet cache backed by MinIO.
-        """
-        if roots is None:
-            roots = self._list_option_roots(provider)
-        frames: list[pd.DataFrame] = []
-        for root in roots:
-            paths = self.ensure_option_parquets(root, after, before, provider)
-            if not paths:
-                continue
-            frames.append(pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True))
-        if not frames:
-            return pd.DataFrame()
-        return pd.concat(frames, ignore_index=True)
 
     def candles(
         self,
@@ -258,16 +206,10 @@ class Reader:
         after: date | None = None,
         before: date | None = None,
     ) -> pd.DataFrame:
-        """Load candle data for one or more symbols.
-
-        Reads from the MinIO historical bucket first, falls back to the intraday bucket.
-        Raises FileNotFoundError if no data is found for a symbol.
-        """
+        """Load candle data for one or more symbols from the intraday bucket."""
         frames: list[pd.DataFrame] = []
         for symbol in symbols:
-            df = self._load_historical_candles(symbol, frequency, provider)
-            if df is None:
-                df = self._load_intraday_candles(symbol, frequency, provider)
+            df = self._load_intraday_candles(symbol, frequency, provider)
             if df is None:
                 raise FileNotFoundError(f"No candle data for {symbol}/{frequency}/{provider}")
             if after is not None and "datetime" in df.columns:
@@ -285,71 +227,9 @@ class Reader:
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True)
 
-    def level_one(
-        self,
-        provider: str,
-        after: date,
-        before: date,
-        symbols: list[str] | None = None,
-        table: str = "level_one_equities",
-    ) -> pd.DataFrame:
-        """Load level-one quote data from Iceberg."""
-        return self._iceberg_read(table, provider, after, before, symbols)
-
-    def order_book(
-        self,
-        provider: str,
-        after: date,
-        before: date,
-        symbols: list[str] | None = None,
-    ) -> pd.DataFrame:
-        """Load order book data from Iceberg."""
-        return self._iceberg_read("order_book", provider, after, before, symbols)
-
-    def fundamentals(
-        self,
-        provider: str,
-        after: date,
-        before: date,
-        symbols: list[str] | None = None,
-    ) -> pd.DataFrame:
-        """Load fundamentals data from Iceberg."""
-        return self._iceberg_read("fundamentals", provider, after, before, symbols)
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    def _list_option_roots(self, provider: str) -> list[str]:
-        arrow = self._iceberg.scan(
-            "options",
-            row_filter=f"provider = '{provider}'",
-            selected_fields=("option_root",),
-        )
-        if arrow.num_rows == 0:
-            return []
-        roots: set[str] = set(arrow.column("option_root").to_pylist())
-        roots.discard(None)
-        return sorted(roots)  # type: ignore[type-var]
-
-    def _iceberg_read(
-        self,
-        table: str,
-        provider: str,
-        after: date,
-        before: date,
-        symbols: list[str] | None,
-    ) -> pd.DataFrame:
-        parts = [
-            f"provider = '{provider}'",
-            f"sample_date >= '{after.isoformat()}'",
-            f"sample_date <= '{before.isoformat()}'",
-        ]
-        if symbols:
-            quoted = ", ".join(f"'{s}'" for s in symbols)
-            parts.append(f"symbol IN ({quoted})")
-        row_filter = " AND ".join(parts)
-        return self._iceberg.scan_to_dataframe(table, row_filter=row_filter)
 
     @staticmethod
     def _lakehouse_parquet_key(root: str, sample_date: date, provider: str) -> str:
@@ -413,12 +293,6 @@ class Reader:
             if start_exp <= exp <= end_exp:
                 result[exp] = f"s3://{bucket}/{key}"
         return result
-
-    def _load_historical_candles(
-        self, symbol: str, frequency: str, provider: str
-    ) -> pd.DataFrame | None:
-        # TODO: read from Iceberg candles table once data is published there
-        return None
 
     def _load_intraday_candles(
         self, symbol: str, frequency: str, provider: str
