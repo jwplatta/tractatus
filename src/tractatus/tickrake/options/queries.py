@@ -20,9 +20,9 @@ def _read_parquet_expr(source: ParquetSource) -> str:
     concrete file paths.  DuckDB accepts both forms natively.
     """
     if isinstance(source, str):
-        return f"read_parquet('{source}')"
+        return f"read_parquet('{source}', union_by_name=true)"
     paths = ", ".join(f"'{p}'" for p in source)
-    return f"read_parquet([{paths}])"
+    return f"read_parquet([{paths}], union_by_name=true)"
 
 
 # Columns required by lookback CTEs for partitioning and ordering.
@@ -95,7 +95,7 @@ class OptionsQueryClient:
     def list_snapshot_times(self, parquet_path: Path, expiry: date) -> list[datetime]:
         """Return sorted distinct sampled_at datetimes for *expiry* in *parquet_path*."""
         rows = self._conn.execute(
-            "SELECT DISTINCT sampled_at FROM read_parquet(?)"
+            "SELECT DISTINCT sampled_at FROM read_parquet(?, union_by_name=true)"
             " WHERE expiration_date = ? ORDER BY sampled_at",
             [str(parquet_path), expiry.isoformat()],
         ).fetchall()
@@ -125,7 +125,7 @@ class OptionsQueryClient:
         """
         cols = ", ".join(columns) if columns else "*"
         df = self._conn.execute(
-            f"SELECT {cols} FROM read_parquet(?)"
+            f"SELECT {cols} FROM read_parquet(?, union_by_name=true)"
             " WHERE expiration_date = ?"
             " AND CAST(sampled_at AS TIMESTAMPTZ) = CAST(? AS TIMESTAMPTZ)",
             [str(parquet_path), expiry.isoformat(), sampled_at.isoformat()],
@@ -170,7 +170,7 @@ class OptionsQueryClient:
     ) -> list[tuple[date, datetime]]:
         """Return (expiry, max_sampled_at) for each expiry in [start_date, end_date]."""
         rows = self._conn.execute(
-            "SELECT expiration_date, MAX(sampled_at) FROM read_parquet(?)"
+            "SELECT expiration_date, MAX(sampled_at) FROM read_parquet(?, union_by_name=true)"
             " WHERE expiration_date BETWEEN ? AND ?"
             " GROUP BY expiration_date",
             [str(parquet_path), start_date.isoformat(), end_date.isoformat()],
@@ -180,7 +180,7 @@ class OptionsQueryClient:
     def list_expirations(self, parquet_path: Path, min_date: date) -> list[date]:
         """Return distinct expiration dates >= *min_date* from *parquet_path*."""
         rows = self._conn.execute(
-            "SELECT DISTINCT expiration_date FROM read_parquet(?)"
+            "SELECT DISTINCT expiration_date FROM read_parquet(?, union_by_name=true)"
             " WHERE expiration_date >= ? ORDER BY expiration_date",
             [str(parquet_path), min_date.isoformat()],
         ).fetchall()
