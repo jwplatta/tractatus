@@ -145,7 +145,7 @@ def data_pull_options(
         path = Reader().get_option_parquet(root, parsed_date, provider=provider)
     except FileNotFoundError:
         typer.echo(f"No published sample for {root} on {parsed_date.isoformat()}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     typer.echo(path)
 
 
@@ -202,7 +202,7 @@ def verify() -> None:
         typer.echo(
             "Packaged smoke dataset is unavailable from the configured Tickrake archive", err=True
         )
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     import pandas as pd  # noqa: PLC0415
     from research.smoke_backtest import run  # type: ignore[import-not-found]  # noqa: PLC0415
 

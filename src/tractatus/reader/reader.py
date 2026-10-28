@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import date, datetime
@@ -55,7 +56,7 @@ class Reader:
         roots: list[str] = []
         for key in keys:
             if key.endswith(".json"):
-                stem = key[len(prefix):].removesuffix(".json")
+                stem = key[len(prefix) :].removesuffix(".json")
                 if stem and "/" not in stem:
                     roots.append(stem)
         return sorted(roots)
@@ -64,8 +65,7 @@ class Reader:
         """Fetch the intraday index JSON for a root."""
         key = f"intraday/{provider}/{root}.json"
         data = self._minio.get_object(self._minio.intraday_bucket, key)
-        import json
-        return json.loads(data)
+        return json.loads(data)  # type: ignore[no-any-return]
 
     def intraday_updated_at(self, root: str, provider: str = "schwab") -> datetime | None:
         """Return the updated_at timestamp from the intraday index, or None."""
@@ -134,9 +134,7 @@ class Reader:
     # Historical options — reads from tickrake-historical MinIO bucket
     # ------------------------------------------------------------------
 
-    def list_option_sample_dates(
-        self, root: str, provider: str = "schwab"
-    ) -> list[date]:
+    def list_option_sample_dates(self, root: str, provider: str = "schwab") -> list[date]:
         """List available sample dates for a root from the MinIO historical bucket."""
         prefix = f"options/{provider}/"
         keys = self._minio.list_keys(self._minio.historical_bucket, prefix)
@@ -232,16 +230,16 @@ class Reader:
             if df is None:
                 df = self._load_intraday_candles(symbol, frequency, provider)
             if df is None:
-                raise FileNotFoundError(
-                    f"No candle data for {symbol}/{frequency}/{provider}"
-                )
+                raise FileNotFoundError(f"No candle data for {symbol}/{frequency}/{provider}")
             if after is not None and "datetime" in df.columns:
                 tz = df["datetime"].dt.tz
                 after_ts = pd.Timestamp(after, tz="UTC") if tz is not None else pd.Timestamp(after)
                 df = df[df["datetime"] >= after_ts]
             if before is not None and "datetime" in df.columns:
                 tz = df["datetime"].dt.tz
-                before_ts = pd.Timestamp(before, tz="UTC") if tz is not None else pd.Timestamp(before)
+                before_ts = (
+                    pd.Timestamp(before, tz="UTC") if tz is not None else pd.Timestamp(before)
+                )
                 df = df[df["datetime"] <= before_ts]
             frames.append(df.reset_index(drop=True))
         if not frames:
@@ -337,7 +335,7 @@ class Reader:
     def _intraday_latest_files(index: dict[str, Any]) -> list[dict[str, Any]]:
         option_chains: dict[str, Any] = index.get("option_chains", {})
         latest: dict[str, Any] = option_chains.get("latest", {})
-        return (
+        return (  # type: ignore[no-any-return]
             latest.get("files")
             or option_chains.get("files")
             or index.get("intraday", {}).get("files", [])
