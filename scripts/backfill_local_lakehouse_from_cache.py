@@ -201,7 +201,7 @@ def main() -> None:
             errors += 1
             continue
 
-        if ledger.get(key, "options") is not None:
+        if ledger.is_published(key):
             tqdm.write(f"SKIP (already committed): {key}")
             continue
 

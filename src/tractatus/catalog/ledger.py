@@ -463,8 +463,19 @@ class Ledger:
         return FileRecord(*row) if row else None
 
     def delete_all(self, table_name: str) -> int:
-        """Delete all records for a table. Returns the count deleted."""
-        return self.delete_filtered(table_name)
+        """Delete all records for a table from both catalog_files and published_artifacts."""
+        count = self.delete_filtered(table_name)
+        self._execute(
+            "DELETE FROM published_artifacts WHERE table_name = %s", (table_name,)
+        )
+        return count
+
+    def is_published(self, artifact_key: str) -> bool:
+        """Return True if the artifact_key exists in published_artifacts."""
+        row = self._fetchone(
+            "SELECT 1 FROM published_artifacts WHERE artifact_key = %s", (artifact_key,)
+        )
+        return row is not None
 
     def delete_filtered(
         self,
