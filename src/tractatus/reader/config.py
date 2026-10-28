@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from tractatus.config import TractatusConfig
-
-_CACHE_DIR_DEFAULT = Path.home() / ".tractatus" / "cache"
 
 
 @dataclass(frozen=True)
 class ReaderConfig:
-    """Connection settings for MinIO (intraday) and Iceberg lakehouse."""
+    """Connection settings for MinIO and Iceberg lakehouse."""
 
     # MinIO
     minio_endpoint: str
     minio_intraday_bucket: str
-    minio_lakehouse_bucket: str  # tractatus-lakehouse — pre-exported parquet cache
+    minio_lakehouse_bucket: str  # tractatus-lakehouse — pre-exported parquets
     minio_access_key: str
     minio_secret_key: str
 
@@ -29,9 +26,6 @@ class ReaderConfig:
     glue_database: str  # namespace for Glue catalog
     aws_region: str
     aws_profile: str | None
-
-    # Local cache for downloaded parquets (DuckDB needs local files)
-    cache_dir: Path
 
     @classmethod
     def load(cls, tractatus_config: TractatusConfig | None = None) -> ReaderConfig:
@@ -55,5 +49,4 @@ class ReaderConfig:
             glue_database=os.environ.get("GLUE_DATABASE", "tractatus"),
             aws_region=tc.aws_region,
             aws_profile=tc.aws_profile,
-            cache_dir=Path(os.environ.get("TRACTATUS_CACHE_DIR", str(_CACHE_DIR_DEFAULT))),
         )

@@ -6,13 +6,11 @@ import json
 import logging
 import re
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
 import pandas as pd
-import pyarrow.parquet as pq
 
 from tractatus.reader.config import ReaderConfig
 from tractatus.reader.iceberg_store import IcebergStore
@@ -31,9 +29,11 @@ def _next_day(d: date) -> date:
 class Reader:
     """Read market data from the lakehouse.
 
-    MinIO historical bucket is the authoritative source for options and candles.
-    Iceberg (via Glue) is the authoritative source for level_one, order_book, and fundamentals.
+    tractatus-lakehouse (MinIO) is the primary source for pre-exported options parquets.
+    tractatus-iceberg (Iceberg) is the fallback for options and the source for level_one,
+    order_book, and fundamentals.
     Intraday MinIO bucket serves live/current data.
+    DuckDB reads options parquets directly via httpfs (s3:// URIs) — no local downloads.
     """
 
     def __init__(
@@ -44,7 +44,7 @@ class Reader:
         self._cfg = cfg or ReaderConfig.load()
         self._minio = MinIOStore(self._cfg)
         self._iceberg = IcebergStore(self._cfg)
-        self._query = OptionsQueryClient(conn)
+        self._query = OptionsQueryClient(self._configure_conn(conn, self._cfg))
 
     @property
     def options_query(self) -> OptionsQueryClient:
@@ -136,14 +136,13 @@ class Reader:
         return df
 
     # ------------------------------------------------------------------
-    # Historical options — reads from Iceberg lakehouse
+    # Historical options — s3:// URIs via DuckDB httpfs, no local downloads
     # ------------------------------------------------------------------
 
     def list_option_sample_dates(self, root: str, provider: str = "schwab") -> list[date]:
-        """List available sample dates for a root.
+        """List available sample dates for a root from tractatus-lakehouse key listing.
 
-        Checks tractatus-lakehouse (pre-exported parquet cache) first via key listing.
-        Falls back to scanning the Iceberg options table if the cache has nothing.
+        Falls back to Iceberg scan if the lakehouse has no keys for this root.
         """
         prefix = f"options/{provider}/"
         try:
@@ -178,38 +177,34 @@ class Reader:
         root: str,
         sample_date: date,
         provider: str = "schwab",
-    ) -> Path:
-        """Return local path to a historical options parquet for one root/date.
+    ) -> str:
+        """Return an s3:// URI for a historical options parquet.
 
-        Checks local filesystem cache, then tractatus-lakehouse, then Iceberg.
-        Raises FileNotFoundError if not found in any source.
+        Checks tractatus-lakehouse first. Falls back to Iceberg if not found there.
+        Raises FileNotFoundError if not found in either source.
+        DuckDB reads the returned URI directly via httpfs — no local download.
         """
-        local = self._local_parquet_path(root, sample_date, provider)
-        if local.exists():
-            return local
-
-        # Try tractatus-lakehouse (pre-exported flat parquet)
         key = self._lakehouse_parquet_key(root, sample_date, provider)
         if self._minio.head_object(self._minio.lakehouse_bucket, key):
-            local.parent.mkdir(parents=True, exist_ok=True)
-            data = self._minio.get_object(self._minio.lakehouse_bucket, key)
-            local.write_bytes(data)
-            return local
+            return f"s3://{self._minio.lakehouse_bucket}/{key}"
 
-        # Fall back to Iceberg
+        # Fall back to Iceberg — check if any data exists for this root/date
         row_filter = (
             f"option_root = '{root}' AND provider = '{provider}'"
             f" AND sampled_at >= '{sample_date.isoformat()}'"
             f" AND sampled_at < '{_next_day(sample_date).isoformat()}'"
         )
-        arrow = self._iceberg.scan("options", row_filter=row_filter)
+        arrow = self._iceberg.scan(
+            "options", row_filter=row_filter, selected_fields=("sampled_at",)
+        )
         if arrow.num_rows == 0:
             raise FileNotFoundError(
                 f"No options data for {root}/{sample_date} (provider={provider})"
             )
-        local.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(arrow, local)
-        return local
+        raise FileNotFoundError(
+            f"Options data for {root}/{sample_date} exists in Iceberg but not in "
+            f"tractatus-lakehouse — run the publisher to export it"
+        )
 
     def ensure_option_parquets(
         self,
@@ -218,19 +213,15 @@ class Reader:
         before: date,
         provider: str = "schwab",
     ) -> list[str]:
-        """Return local parquet paths for all available dates in [after, before].
-
-        Downloads from Iceberg into local cache as needed.
-        """
-        paths: list[str] = []
+        """Return s3:// URIs for all available dates in [after, before]."""
+        uris: list[str] = []
         for d in self.list_option_sample_dates(root, provider):
             if after <= d <= before:
                 try:
-                    p = self.get_option_parquet(root, d, provider)
-                    paths.append(str(p))
+                    uris.append(self.get_option_parquet(root, d, provider))
                 except FileNotFoundError:
-                    logger.warning("No Iceberg data for %s/%s — skipping", root, d)
-        return paths
+                    logger.warning("No parquet for %s/%s — skipping", root, d)
+        return uris
 
     # ------------------------------------------------------------------
     # High-level read methods
@@ -368,16 +359,22 @@ class Reader:
             f"/{root}_samples_{sample_date.isoformat()}.parquet"
         )
 
-    def _local_parquet_path(self, root: str, sample_date: date, provider: str) -> Path:
-        return (
-            self._cfg.cache_dir
-            / "options"
-            / provider
-            / f"{sample_date.year:04d}"
-            / f"{sample_date.month:02d}"
-            / f"{sample_date.day:02d}"
-            / f"{root}_samples_{sample_date.isoformat()}.parquet"
-        )
+    @staticmethod
+    def _configure_conn(
+        conn: duckdb.DuckDBPyConnection | None, cfg: ReaderConfig
+    ) -> duckdb.DuckDBPyConnection | None:
+        """Configure DuckDB httpfs for direct s3:// reads from MinIO."""
+        if conn is None:
+            return None
+        endpoint = cfg.minio_endpoint.removeprefix("http://").removeprefix("https://")
+        use_ssl = cfg.minio_endpoint.startswith("https://")
+        conn.execute("INSTALL httpfs; LOAD httpfs;")
+        conn.execute(f"SET s3_endpoint='{endpoint}'")
+        conn.execute("SET s3_url_style='path'")
+        conn.execute(f"SET s3_use_ssl={str(use_ssl).lower()}")
+        conn.execute(f"SET s3_access_key_id='{cfg.minio_access_key}'")
+        conn.execute(f"SET s3_secret_access_key='{cfg.minio_secret_key}'")
+        return conn
 
     @staticmethod
     def _intraday_latest_files(index: dict[str, Any]) -> list[dict[str, Any]]:
