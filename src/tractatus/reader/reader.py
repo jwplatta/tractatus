@@ -58,6 +58,13 @@ class CacheReader:
         """Public storage identity, without credentials."""
         return self._cfg.minio_endpoint.rstrip("/"), self._cfg.minio_lakehouse_bucket
 
+    @staticmethod
+    def configure_connection(
+        conn: duckdb.DuckDBPyConnection, cfg: ReaderConfig | None = None
+    ) -> None:
+        """Configure a caller-owned connection for this reader's MinIO endpoint."""
+        CacheReader._configure_conn(conn, cfg or ReaderConfig.load())
+
     @contextmanager
     def query_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
         """Own a configured connection for one task; never share it across threads."""
@@ -210,7 +217,7 @@ class CacheReader:
     def list_roots(self, provider: str = "schwab") -> list[str]:
         """List option roots available in the intraday MinIO index."""
         prefix = f"intraday/{provider}/"
-        keys = self._minio.list_keys(self._minio.intraday_bucket, prefix)
+        keys = self._minio.list_keys(self._minio.intraday_bucket, prefix, delimiter="/")
         roots: list[str] = []
         for key in keys:
             if key.endswith(".json"):

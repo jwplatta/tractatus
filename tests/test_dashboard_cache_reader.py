@@ -1,5 +1,6 @@
 from datetime import date
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import duckdb
 import pandas as pd
@@ -59,3 +60,15 @@ def test_daily_projection_deduplicates_and_selects_nearest_expiry(tmp_path):
         )
     assert list(result.volatility) == [21.0, 22.0]
     assert set(result.expiration_date) == {"2026-10-30"}
+
+
+def test_root_discovery_uses_shallow_index_listing():
+    reader = CacheReader.__new__(CacheReader)
+    reader._minio = MagicMock()
+    reader._minio.intraday_bucket = "live"
+    reader._minio.list_keys.return_value = [
+        "intraday/schwab/SPXW.json",
+        "intraday/schwab/TSLA.json",
+    ]
+    assert reader.list_roots() == ["SPXW", "TSLA"]
+    reader._minio.list_keys.assert_called_once_with("live", "intraday/schwab/", delimiter="/")

@@ -66,11 +66,14 @@ class MinIOStore:
             for obj in page.get("Contents", [])
         ]
 
-    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+    def list_keys(self, bucket: str, prefix: str, delimiter: str | None = None) -> list[str]:
         """Return all keys under prefix."""
         paginator = self._s3.get_paginator("list_objects_v2")
         keys: list[str] = []
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
+        if delimiter is not None:
+            kwargs["Delimiter"] = delimiter
+        for page in paginator.paginate(**kwargs):
             for obj in page.get("Contents", []):
                 keys.append(str(obj["Key"]))
         return keys

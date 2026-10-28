@@ -173,3 +173,18 @@ uv run mypy src
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow details.
+
+### Dashboard historical caches
+
+`CacheReader.list_option_sources(root, after, before, provider="schwab")` returns
+`OptionSource(sample_date, uri, revision, size_bytes)` records over an inclusive
+range. Revisions are opaque ETag/size identities; listing errors propagate.
+Consumers must namespace cached results by `source_namespace` and provider.
+
+Use `with reader.query_connection() as conn:` for task-owned DuckDB reads and
+`reader.option_daily_snapshots(source, target_dte, conn)` for projected chains
+at the first sample at/after 10:30 New York time and the last sample. The expiry
+nearest the target DTE is selected separately per source date; ties choose the
+earlier expiry. Coincident timestamps appear once. The caller computes its own
+metrics. `CacheReader.configure_connection(conn)` supports existing caller-owned
+connections; credentials and HTTPFS setup remain inside Tractatus.

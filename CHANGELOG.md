@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Root discovery lists only top-level intraday index files instead of recursively enumerating snapshot objects.
+
 ### Added
 - CacheReader source inventories with remote revisions, task-owned public query connections, and projected daily nearest-DTE option snapshots for dashboard caches.
 
