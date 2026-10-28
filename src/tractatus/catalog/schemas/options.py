@@ -70,6 +70,7 @@ OPTIONS_TABLE = TableDef(
         NestedField(field_id=44, name="option_root", field_type=StringType(), required=False),
         NestedField(field_id=45, name="underlying_symbol", field_type=StringType(), required=False),
         NestedField(field_id=46, name="provider", field_type=StringType(), required=False),
+        NestedField(field_id=47, name="sample_date", field_type=StringType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
