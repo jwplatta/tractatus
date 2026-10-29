@@ -74,6 +74,53 @@ class CacheReader:
             conn.execute("SET memory_limit='1GB'")
             yield conn
 
+    def discover_option_sources(
+        self,
+        roots: list[str],
+        after: date,
+        before: date,
+        provider: str = "schwab",
+    ) -> dict[str, list[OptionSource]]:
+        """List the lakehouse once and return {root: [OptionSource]} for all requested roots.
+
+        Performs a single S3 listing under options/{provider}/ and partitions
+        results by root, filtering to the [after, before] date range.
+        Roots with no available files are omitted from the result.
+        """
+        if not roots or before < after:
+            return {}
+        prefix = f"options/{provider}/"
+        wanted = set(roots)
+        inventory: dict[str, list[OptionSource]] = {}
+        for key, etag, size in self._minio.list_object_metadata(
+            self._minio.lakehouse_bucket, prefix
+        ):
+            filename = key.rsplit("/", 1)[-1]
+            if not filename.endswith(".parquet") or "_samples_" not in filename:
+                continue
+            root = filename.split("_samples_")[0]
+            if root not in wanted:
+                continue
+            match = _DATE_DIR_RE.search(key)
+            if match is None:
+                continue
+            day = date(*(int(v) for v in match.groups()))
+            if not (after <= day <= before):
+                continue
+            if not etag:
+                raise ValueError(f"Missing object revision for {key}")
+            inventory.setdefault(root, []).append(
+                OptionSource(
+                    day,
+                    f"s3://{self._minio.lakehouse_bucket}/{key}",
+                    f"{etag}:{size}",
+                    size,
+                )
+            )
+        for sources in inventory.values():
+            sources.sort(key=lambda s: s.sample_date)
+        return inventory
+
     def list_option_sources(
         self, root: str, after: date, before: date, provider: str = "schwab"
     ) -> list[OptionSource]:
