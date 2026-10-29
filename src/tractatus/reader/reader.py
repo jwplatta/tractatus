@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -19,6 +22,16 @@ from tractatus.tickrake.options.queries import OPTIONS_DTYPES, OptionsQueryClien
 logger = logging.getLogger(__name__)
 
 _DATE_DIR_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
+
+
+@dataclass(frozen=True)
+class OptionSource:
+    """A discovered historical options parquet with its identity attributes."""
+
+    sample_date: date
+    uri: str
+    revision: str  # "v1:{size_bytes}" — changes when the file is replaced
+    size_bytes: int
 
 
 class CacheReader:
@@ -38,7 +51,8 @@ class CacheReader:
     ) -> None:
         self._cfg = cfg or ReaderConfig.load()
         self._minio = MinIOStore(self._cfg)
-        self._query = OptionsQueryClient(self._configure_conn(conn, self._cfg))
+        self._conn = self._configure_conn(conn or duckdb.connect(":memory:"), self._cfg)
+        self._query = OptionsQueryClient(self._conn)
 
     @property
     def options_query(self) -> OptionsQueryClient:
@@ -108,6 +122,105 @@ class CacheReader:
                 except FileNotFoundError:
                     logger.warning("No parquet for %s/%s — skipping", root, d)
         return uris
+
+    def discover_option_sources(
+        self,
+        roots: list[str],
+        after: date,
+        before: date,
+        provider: str = "schwab",
+    ) -> dict[str, list[OptionSource]]:
+        """List the lakehouse once and return {root: [OptionSource]} for all requested roots.
+
+        Performs a single S3 listing under options/{provider}/ and partitions
+        results by root, filtering to the [after, before] date range.
+        Roots with no available files are omitted from the result.
+        """
+        if not roots:
+            return {}
+        prefix = f"options/{provider}/"
+        wanted = set(roots)
+        inventory: dict[str, list[OptionSource]] = {}
+        for key, size in self._minio.list_objects(self._minio.lakehouse_bucket, prefix):
+            filename = key.rsplit("/", 1)[-1]
+            if not filename.endswith(".parquet") or "_samples_" not in filename:
+                continue
+            root = filename.split("_samples_")[0]
+            if root not in wanted:
+                continue
+            m = _DATE_DIR_RE.search(key)
+            if not m:
+                continue
+            sample_date = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            if not (after <= sample_date <= before):
+                continue
+            source = OptionSource(
+                sample_date=sample_date,
+                uri=f"s3://{self._minio.lakehouse_bucket}/{key}",
+                revision=f"v1:{size}",
+                size_bytes=size,
+            )
+            inventory.setdefault(root, []).append(source)
+        for sources in inventory.values():
+            sources.sort(key=lambda s: s.sample_date)
+        return inventory
+
+    def list_option_sources(
+        self,
+        root: str,
+        after: date,
+        before: date,
+        provider: str = "schwab",
+    ) -> list[OptionSource]:
+        """Return OptionSources for root in [after, before], sorted by sample_date."""
+        return self.discover_option_sources([root], after, before, provider).get(root, [])
+
+    # ------------------------------------------------------------------
+    # Query context — DuckDB reads s3:// URIs directly via httpfs
+    # ------------------------------------------------------------------
+
+    @contextmanager
+    def query_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        """Context manager that yields the configured DuckDB connection."""
+        yield self._conn
+
+    def option_daily_snapshots(
+        self,
+        source: OptionSource,
+        target_dte: int,
+        conn: duckdb.DuckDBPyConnection,
+    ) -> pd.DataFrame:
+        """Load all option rows for the expiry closest to target_dte from source.
+
+        Queries source.uri directly via DuckDB httpfs. Returns rows ordered by
+        sampled_at and strike. Returns an empty DataFrame if no rows match.
+        """
+        sample_iso = source.sample_date.isoformat()
+        uri = source.uri
+        df = conn.execute(f"""
+            WITH candidates AS (
+                SELECT *,
+                    ABS(DATEDIFF('day', DATE '{sample_iso}',
+                        CAST(expiration_date AS DATE)) - {target_dte}) AS _dte_diff
+                FROM read_parquet('{uri}', union_by_name=true)
+            ),
+            closest_exp AS (
+                SELECT expiration_date
+                FROM candidates
+                ORDER BY _dte_diff, expiration_date
+                LIMIT 1
+            )
+            SELECT c.* EXCLUDE (_dte_diff)
+            FROM candidates c
+            JOIN closest_exp e ON c.expiration_date = e.expiration_date
+            ORDER BY sampled_at, strike
+        """).df()
+        df = df.astype({col: dtype for col, dtype in OPTIONS_DTYPES.items() if col in df.columns})
+        if "expiration_date" in df.columns:
+            df["expiration_date"] = pd.to_datetime(df["expiration_date"])
+        if "contract_type" in df.columns:
+            df["contract_type"] = df["contract_type"].str.upper()
+        return df
 
     # ------------------------------------------------------------------
     # Intraday (live) — reads from intraday MinIO bucket
@@ -241,11 +354,9 @@ class CacheReader:
 
     @staticmethod
     def _configure_conn(
-        conn: duckdb.DuckDBPyConnection | None, cfg: ReaderConfig
-    ) -> duckdb.DuckDBPyConnection | None:
+        conn: duckdb.DuckDBPyConnection, cfg: ReaderConfig
+    ) -> duckdb.DuckDBPyConnection:
         """Configure DuckDB httpfs for direct s3:// reads from MinIO."""
-        if conn is None:
-            return None
         endpoint = cfg.minio_endpoint.removeprefix("http://").removeprefix("https://")
         use_ssl = cfg.minio_endpoint.startswith("https://")
         conn.execute("INSTALL httpfs; LOAD httpfs;")

@@ -66,6 +66,15 @@ class MinIOStore:
                 keys.append(str(obj["Key"]))
         return keys
 
+    def list_objects(self, bucket: str, prefix: str) -> list[tuple[str, int]]:
+        """Return (key, size_bytes) pairs for all objects under prefix."""
+        paginator = self._s3.get_paginator("list_objects_v2")
+        result: list[tuple[str, int]] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                result.append((str(obj["Key"]), int(obj["Size"])))
+        return result
+
     def get_json(self, bucket: str, key: str) -> dict[str, Any]:
         """Fetch a JSON object. Returns empty dict on any error."""
         try:
