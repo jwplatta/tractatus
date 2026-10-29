@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -51,8 +49,7 @@ class CacheReader:
     ) -> None:
         self._cfg = cfg or ReaderConfig.load()
         self._minio = MinIOStore(self._cfg)
-        self._conn = self._configure_conn(conn or duckdb.connect(":memory:"), self._cfg)
-        self._query = OptionsQueryClient(self._conn)
+        self._query = OptionsQueryClient(self._configure_conn(conn, self._cfg))
 
     @property
     def options_query(self) -> OptionsQueryClient:
@@ -174,53 +171,6 @@ class CacheReader:
     ) -> list[OptionSource]:
         """Return OptionSources for root in [after, before], sorted by sample_date."""
         return self.discover_option_sources([root], after, before, provider).get(root, [])
-
-    # ------------------------------------------------------------------
-    # Query context — DuckDB reads s3:// URIs directly via httpfs
-    # ------------------------------------------------------------------
-
-    @contextmanager
-    def query_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
-        """Context manager that yields the configured DuckDB connection."""
-        yield self._conn
-
-    def option_daily_snapshots(
-        self,
-        source: OptionSource,
-        target_dte: int,
-        conn: duckdb.DuckDBPyConnection,
-    ) -> pd.DataFrame:
-        """Load all option rows for the expiry closest to target_dte from source.
-
-        Queries source.uri directly via DuckDB httpfs. Returns rows ordered by
-        sampled_at and strike. Returns an empty DataFrame if no rows match.
-        """
-        sample_iso = source.sample_date.isoformat()
-        uri = source.uri
-        df = conn.execute(f"""
-            WITH candidates AS (
-                SELECT *,
-                    ABS(DATEDIFF('day', DATE '{sample_iso}',
-                        CAST(expiration_date AS DATE)) - {target_dte}) AS _dte_diff
-                FROM read_parquet('{uri}', union_by_name=true)
-            ),
-            closest_exp AS (
-                SELECT expiration_date
-                FROM candidates
-                ORDER BY _dte_diff, expiration_date
-                LIMIT 1
-            )
-            SELECT c.* EXCLUDE (_dte_diff)
-            FROM candidates c
-            JOIN closest_exp e ON c.expiration_date = e.expiration_date
-            ORDER BY sampled_at, strike
-        """).df()
-        df = df.astype({col: dtype for col, dtype in OPTIONS_DTYPES.items() if col in df.columns})
-        if "expiration_date" in df.columns:
-            df["expiration_date"] = pd.to_datetime(df["expiration_date"])
-        if "contract_type" in df.columns:
-            df["contract_type"] = df["contract_type"].str.upper()
-        return df
 
     # ------------------------------------------------------------------
     # Intraday (live) — reads from intraday MinIO bucket
@@ -354,9 +304,11 @@ class CacheReader:
 
     @staticmethod
     def _configure_conn(
-        conn: duckdb.DuckDBPyConnection, cfg: ReaderConfig
-    ) -> duckdb.DuckDBPyConnection:
+        conn: duckdb.DuckDBPyConnection | None, cfg: ReaderConfig
+    ) -> duckdb.DuckDBPyConnection | None:
         """Configure DuckDB httpfs for direct s3:// reads from MinIO."""
+        if conn is None:
+            return None
         endpoint = cfg.minio_endpoint.removeprefix("http://").removeprefix("https://")
         use_ssl = cfg.minio_endpoint.startswith("https://")
         conn.execute("INSTALL httpfs; LOAD httpfs;")

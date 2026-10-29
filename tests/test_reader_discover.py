@@ -1,15 +1,9 @@
-"""Tests for CacheReader.discover_option_sources and related methods."""
+"""Tests for CacheReader.discover_option_sources and list_option_sources."""
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from pathlib import Path
+from datetime import date
 from unittest.mock import MagicMock, patch
-
-import duckdb
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pytest
 
 from tractatus.reader.reader import CacheReader, OptionSource
 
@@ -37,11 +31,6 @@ def _key(root: str, d: date, provider: str = "schwab") -> str:
         f"options/{provider}/{d.year:04d}/{d.month:02d}/{d.day:02d}"
         f"/{root}_samples_{d.isoformat()}.parquet"
     )
-
-
-# ---------------------------------------------------------------------------
-# discover_option_sources
-# ---------------------------------------------------------------------------
 
 
 def test_discover_returns_empty_for_empty_roots():
@@ -94,9 +83,7 @@ def test_discover_filters_by_date_range():
     ]
     reader = _make_reader(objects)
 
-    result = reader.discover_option_sources(
-        ["SPY"], date(2026, 10, 1), date(2026, 10, 30)
-    )
+    result = reader.discover_option_sources(["SPY"], date(2026, 10, 1), date(2026, 10, 30))
 
     assert result["SPY"] == [
         OptionSource(in_range, f"s3://tractatus-lakehouse/{_key('SPY', in_range)}", "v1:200", 200)
@@ -105,7 +92,7 @@ def test_discover_filters_by_date_range():
 
 def test_discover_sources_sorted_by_sample_date():
     d1, d2, d3 = date(2026, 10, 3), date(2026, 10, 1), date(2026, 10, 2)
-    objects = [(_key("SPY", d) , 100) for d in (d1, d2, d3)]
+    objects = [(_key("SPY", d), 100) for d in (d1, d2, d3)]
     reader = _make_reader(objects)
 
     result = reader.discover_option_sources(["SPY"], d2, d1)
@@ -121,11 +108,6 @@ def test_discover_omits_roots_with_no_files():
     result = reader.discover_option_sources(["SPY", "SPXW"], d, d)
 
     assert "SPXW" not in result
-
-
-# ---------------------------------------------------------------------------
-# list_option_sources
-# ---------------------------------------------------------------------------
 
 
 def test_list_option_sources_delegates_to_discover():
@@ -145,88 +127,3 @@ def test_list_option_sources_returns_empty_for_missing_root():
     reader = _make_reader([(_key("SPY", d), 100)])
 
     assert reader.list_option_sources("TSLA", d, d) == []
-
-
-# ---------------------------------------------------------------------------
-# option_daily_snapshots — uses real DuckDB + temp parquet
-# ---------------------------------------------------------------------------
-
-
-def _write_parquet(path: Path, rows: list[dict]) -> None:
-    table = pa.table(
-        {
-            "strike": pa.array([float(r["strike"]) for r in rows], type=pa.float64()),
-            "contract_type": pa.array([r["contract_type"] for r in rows], type=pa.string()),
-            "expiration_date": pa.array([r["expiration_date"] for r in rows], type=pa.string()),
-            "sampled_at": pa.array([r["sampled_at"] for r in rows], type=pa.timestamp("us")),
-            "volatility": pa.array([float(r.get("vol", 0.2)) for r in rows], type=pa.float64()),
-            "underlying_price": pa.array(
-                [float(r.get("spot", 500.0)) for r in rows], type=pa.float64()
-            ),
-        }
-    )
-    pq.write_table(table, str(path))
-
-
-def test_option_daily_snapshots_selects_closest_expiry(tmp_path: Path):
-    sample_date = date(2026, 10, 1)
-    # target_dte=30 → closest expiry to 2026-10-31
-    exp_30 = "2026-10-31"  # 30 days out
-    exp_60 = "2026-11-30"  # 60 days out
-    parquet_path = tmp_path / "SPY_samples_2026-10-01.parquet"
-    _write_parquet(
-        parquet_path,
-        [
-            {"strike": 500, "contract_type": "CALL", "expiration_date": exp_30, "sampled_at": datetime(2026, 10, 1, 14, 30)},
-            {"strike": 510, "contract_type": "PUT",  "expiration_date": exp_30, "sampled_at": datetime(2026, 10, 1, 14, 30)},
-            {"strike": 500, "contract_type": "CALL", "expiration_date": exp_60, "sampled_at": datetime(2026, 10, 1, 14, 30)},
-        ],
-    )
-    source = OptionSource(
-        sample_date=sample_date,
-        uri=str(parquet_path),
-        revision="v1:100",
-        size_bytes=100,
-    )
-    conn = duckdb.connect(":memory:")
-
-    cfg = MagicMock()
-    cfg.minio_endpoint = "http://localhost:9000"
-    cfg.minio_access_key = "x"
-    cfg.minio_secret_key = "x"
-    cfg.minio_lakehouse_bucket = "b"
-    cfg.minio_intraday_bucket = "b"
-
-    with patch("tractatus.reader.reader.MinIOStore"):
-        reader = CacheReader(cfg=cfg, conn=conn)
-
-    df = reader.option_daily_snapshots(source, 30, conn)
-
-    assert set(df["expiration_date"].dt.date.unique()) == {date(2026, 10, 31)}
-    assert len(df) == 2
-    assert set(df["contract_type"].unique()) == {"CALL", "PUT"}
-
-
-def test_option_daily_snapshots_returns_empty_for_empty_parquet(tmp_path: Path):
-    parquet_path = tmp_path / "empty.parquet"
-    _write_parquet(parquet_path, [])
-    source = OptionSource(
-        sample_date=date(2026, 10, 1),
-        uri=str(parquet_path),
-        revision="v1:0",
-        size_bytes=0,
-    )
-    conn = duckdb.connect(":memory:")
-
-    cfg = MagicMock()
-    cfg.minio_endpoint = "http://localhost:9000"
-    cfg.minio_access_key = "x"
-    cfg.minio_secret_key = "x"
-    cfg.minio_lakehouse_bucket = "b"
-    cfg.minio_intraday_bucket = "b"
-
-    with patch("tractatus.reader.reader.MinIOStore"):
-        reader = CacheReader(cfg=cfg, conn=conn)
-
-    df = reader.option_daily_snapshots(source, 30, conn)
-    assert df.empty
