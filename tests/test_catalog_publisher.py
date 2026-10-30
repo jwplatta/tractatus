@@ -740,3 +740,104 @@ def test_group_committed_emitted_after_cache_failure(
     assert warning_events[0]["group_id"] == "options/schwab/SPX/2026-06-25"
 
 
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_rerun_after_commit_emits_no_group_committed(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """A second publish run on already-committed files should emit no group_committed event."""
+    config = _make_config(tmp_path)
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+
+    mock_iceberg_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+
+    publisher = Publisher(config)
+
+    # First run — commits the file
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+    ):
+        result_first = publisher.run(table_name="options")
+
+    assert result_first.committed == 1
+
+    # Second run — same files are already committed, nothing pending
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        result_second = publisher.run(table_name="options")
+        events = _collect_committed_events(mock_logger)
+
+    publisher.close()
+
+    assert result_second.committed == 0
+    assert len(events) == 0
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_new_files_for_existing_group_produce_separate_event(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """A new file for an already-committed group should produce a second group_committed event."""
+    config = _make_config(tmp_path)
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-18")
+
+    mock_iceberg_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+
+    publisher = Publisher(config)
+
+    # First run — commits the first file
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        publisher.run(table_name="options")
+        events_first = _collect_committed_events(mock_logger)
+
+    # Second run — a new file arrives for the same group
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-25")
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        result_second = publisher.run(table_name="options")
+        events_second = _collect_committed_events(mock_logger)
+
+    publisher.close()
+
+    assert len(events_first) == 1
+    assert result_second.committed == 1
+    assert len(events_second) == 1
+    # Both events share the same logical group_id
+    assert events_first[0]["group_id"] == events_second[0]["group_id"] == "options/schwab/SPX/2026-06-25"
+
+

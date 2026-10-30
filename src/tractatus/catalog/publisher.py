@@ -401,6 +401,8 @@ class Publisher:
                         cached += 1
                         cache_outcome = "cached"
                 except Exception as cache_exc:
+                    cache_key = None
+                    cache_bytes = None
                     cache_outcome = "cache_failed"
                     logger.warning(
                         {
