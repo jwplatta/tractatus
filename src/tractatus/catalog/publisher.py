@@ -280,6 +280,10 @@ class Publisher:
         for (provider, root, sample_date_str), group_records in group_items:
             paths = [r.path for r in group_records]
             try:
+                group_id = f"{table_name}/{provider}/{root}/{sample_date_str}"
+                input_bytes: int = sum(r.size_bytes for r in group_records)
+                cache_key: str | None = None
+                cache_bytes: int | None = None
                 sample_dt = (
                     date.fromisoformat(sample_date_str)
                     if isinstance(sample_date_str, str)
@@ -357,14 +361,13 @@ class Publisher:
                         if snap and snap.summary and "added-files-size" in snap.summary
                         else None
                     )
-                    parquet_bytes_added: int | None = int(raw) if raw is not None else None
+                    iceberg_bytes: int | None = int(raw) if raw is not None else None
                 except Exception:
-                    parquet_bytes_added = None
+                    iceberg_bytes = None
 
                 # Upload combined table to cache MinIO if requested via --cache
-                cache_key = None
                 if cache:
-                    cache_key = self._cache_to_minio(normalized, table_name, group_records[0].path)
+                    cache_key, cache_bytes = self._cache_to_minio(normalized, table_name, group_records[0].path)
                     if cache_key:
                         for path in paths:
                             self._ledger.mark_cached(path, table_name, cache_key)
@@ -387,7 +390,7 @@ class Publisher:
                         cached=cache_key is not None,
                         cached_at=self._ledger._now() if cache_key else None,
                         row_count=normalized.num_rows,
-                        size_bytes=parquet_bytes_added,
+                        size_bytes=iceberg_bytes,
                     )
                 except Exception as pub_exc:
                     logger.warning(
@@ -398,15 +401,22 @@ class Publisher:
                         }
                     )
 
+                # Byte field semantics:
+                #   input_bytes   — always int; sum of raw file sizes from ledger
+                #   iceberg_bytes — None if snapshot unavailable; int if measured
+                #   cache_bytes   — None if caching not attempted; int if measured
                 logger.info(
                     {
                         "event": "group_committed",
+                        "group_id": group_id,
                         "table": table_name,
                         "provider": provider,
                         "root": root,
                         "sample_date": sample_date_str,
                         "files": len(group_records),
-                        "parquet_bytes_added": parquet_bytes_added,
+                        "input_bytes": input_bytes,
+                        "iceberg_bytes": iceberg_bytes,
+                        "cache_bytes": cache_bytes,
                         "cached": cache_key is not None,
                     }
                 )
@@ -440,14 +450,14 @@ class Publisher:
         table: pa.Table,
         table_name: str,
         path: str,
-    ) -> str | None:
-        """Write parquet to the cache MinIO bucket. Returns cache_key or None."""
+    ) -> tuple[str | None, int | None]:
+        """Write parquet to the cache MinIO bucket. Returns (cache_key, bytes) or (None, None)."""
         if self._cache_client is None:
-            return None
+            return None, None
 
         buf = io.BytesIO()
         pq.write_table(table, buf)
-        buf.seek(0)
+        data = buf.getvalue()
 
         # Cache key mirrors the staging path but with .parquet extension
         stem = PurePosixPath(path).stem
@@ -457,9 +467,9 @@ class Publisher:
         self._cache_client.put_object(
             Bucket=self._config.cache_bucket,
             Key=cache_key,
-            Body=buf.getvalue(),
+            Body=data,
         )
-        return cache_key
+        return cache_key, len(data)
 
     def _write_to_cache(
         self, table: pa.Table, cache_key: str, overwrite: bool = True
