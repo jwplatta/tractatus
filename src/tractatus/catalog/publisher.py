@@ -279,6 +279,17 @@ class Publisher:
 
         for (provider, root, sample_date_str), group_records in group_items:
             paths = [r.path for r in group_records]
+
+            # Computed before any I/O — stable across retries for the same input set
+            group_id = f"{table_name}/{provider}/{root}/{sample_date_str}"
+            input_bytes: int = sum(r.size_bytes for r in group_records)
+
+            # Stage 1: normalize, validate, append to Iceberg
+            # Failures here mark files as errors and skip to the next group.
+            normalized: pa.Table | None = None
+            interval: str | None = None
+            iceberg_bytes: int | None = None
+            snapshot_id: int | None = None
             try:
                 sample_dt = (
                     date.fromisoformat(sample_date_str)
@@ -352,64 +363,13 @@ class Publisher:
 
                 try:
                     snap = iceberg_table.current_snapshot()
-                    raw = (
-                        snap.summary["added-files-size"]
-                        if snap and snap.summary and "added-files-size" in snap.summary
-                        else None
-                    )
-                    parquet_bytes_added: int | None = int(raw) if raw is not None else None
+                    if snap:
+                        snapshot_id = snap.snapshot_id
+                        raw = snap.summary.get("added-files-size") if snap.summary else None
+                        iceberg_bytes = int(raw) if raw is not None else None
                 except Exception:
-                    parquet_bytes_added = None
+                    pass
 
-                # Upload combined table to cache MinIO if requested via --cache
-                cache_key = None
-                if cache:
-                    cache_key = self._cache_to_minio(normalized, table_name, group_records[0].path)
-                    if cache_key:
-                        for path in paths:
-                            self._ledger.mark_cached(path, table_name, cache_key)
-                        cached += 1
-
-                # Record the published artifact
-                artifact_key = (
-                    cache_key
-                    or f"{table_name}/{provider}/{sample_date_str[:4]}/{sample_date_str[5:7]}/{sample_date_str[8:10]}/{root}_samples_{sample_date_str}.parquet"
-                )
-                try:
-                    self._ledger.upsert_published(
-                        artifact_key=artifact_key,
-                        table_name=table_name,
-                        provider=provider,
-                        symbol=root,
-                        sample_date=sample_date_str,
-                        interval=interval,
-                        committed_at=self._ledger._now(),
-                        cached=cache_key is not None,
-                        cached_at=self._ledger._now() if cache_key else None,
-                        row_count=normalized.num_rows,
-                        size_bytes=parquet_bytes_added,
-                    )
-                except Exception as pub_exc:
-                    logger.warning(
-                        {
-                            "event": "published_artifacts_write_failed",
-                            "artifact_key": artifact_key,
-                            "error": str(pub_exc),
-                        }
-                    )
-
-                logger.info(
-                    {
-                        "event": "group_committed",
-                        "table": table_name,
-                        "provider": provider,
-                        "root": root,
-                        "sample_date": sample_date_str,
-                        "files": len(group_records),
-                        "parquet_bytes_added": parquet_bytes_added,
-                        "cached": cache_key is not None,
-                    }
-                )
             except Exception as exc:
                 for path in paths:
                     self._ledger.mark_error(path, table_name, str(exc))
@@ -423,6 +383,92 @@ class Publisher:
                     }
                 )
                 errors += len(group_records)
+                continue
+
+            # Stage 2: cache write
+            # Committed files are never marked as errors here. A cache failure logs a
+            # warning and sets cache_outcome="cache_failed" but does not affect the
+            # committed state or suppress the group_committed event.
+            cache_key: str | None = None
+            cache_bytes: int | None = None
+            cache_outcome = "not_attempted"
+            if cache and normalized is not None:
+                try:
+                    cache_key, cache_bytes = self._cache_to_minio(
+                        normalized, table_name, group_records[0].path
+                    )
+                    if cache_key:
+                        for path in paths:
+                            self._ledger.mark_cached(path, table_name, cache_key)
+                        cached += 1
+                        cache_outcome = "cached"
+                except Exception as cache_exc:
+                    cache_key = None
+                    cache_bytes = None
+                    cache_outcome = "cache_failed"
+                    logger.warning(
+                        {
+                            "event": "cache_write_failed",
+                            "group_id": group_id,
+                            "table": table_name,
+                            "error_class": type(cache_exc).__name__,
+                            "error_message": str(cache_exc),
+                        }
+                    )
+
+            # Stage 3: record and emit
+            # group_committed is always emitted when Iceberg commit succeeded,
+            # regardless of cache outcome.
+            artifact_key = (
+                cache_key
+                or f"{table_name}/{provider}/{sample_date_str[:4]}/{sample_date_str[5:7]}/{sample_date_str[8:10]}/{root}_samples_{sample_date_str}.parquet"
+            )
+            try:
+                self._ledger.upsert_published(
+                    artifact_key=artifact_key,
+                    table_name=table_name,
+                    provider=provider,
+                    symbol=root,
+                    sample_date=sample_date_str,
+                    interval=interval,
+                    committed_at=self._ledger._now(),
+                    cached=cache_key is not None,
+                    cached_at=self._ledger._now() if cache_key else None,
+                    row_count=normalized.num_rows,
+                    size_bytes=iceberg_bytes,
+                )
+            except Exception as pub_exc:
+                logger.warning(
+                    {
+                        "event": "published_artifacts_write_failed",
+                        "artifact_key": artifact_key,
+                        "error": str(pub_exc),
+                    }
+                )
+
+            # Byte field semantics:
+            #   input_bytes   — always int; sum of raw file sizes from ledger
+            #   iceberg_bytes — None if snapshot unavailable; int if measured
+            #   cache_bytes   — None if not attempted or failed; int if measured
+            #   snapshot_id   — Iceberg snapshot ID; unique per commit; deduplicate retries
+            #   cache_outcome — "not_attempted" | "cached" | "cache_failed"
+            logger.info(
+                {
+                    "event": "group_committed",
+                    "group_id": group_id,
+                    "snapshot_id": snapshot_id,
+                    "table": table_name,
+                    "provider": provider,
+                    "root": root,
+                    "sample_date": sample_date_str,
+                    "files": len(group_records),
+                    "input_bytes": input_bytes,
+                    "iceberg_bytes": iceberg_bytes,
+                    "cache_bytes": cache_bytes,
+                    "cache_outcome": cache_outcome,
+                    "cached": cache_key is not None,
+                }
+            )
 
         logger.info(
             {
@@ -440,14 +486,14 @@ class Publisher:
         table: pa.Table,
         table_name: str,
         path: str,
-    ) -> str | None:
-        """Write parquet to the cache MinIO bucket. Returns cache_key or None."""
+    ) -> tuple[str | None, int | None]:
+        """Write parquet to the cache MinIO bucket. Returns (cache_key, bytes) or (None, None)."""
         if self._cache_client is None:
-            return None
+            return None, None
 
         buf = io.BytesIO()
         pq.write_table(table, buf)
-        buf.seek(0)
+        data = buf.getvalue()
 
         # Cache key mirrors the staging path but with .parquet extension
         stem = PurePosixPath(path).stem
@@ -457,9 +503,9 @@ class Publisher:
         self._cache_client.put_object(
             Bucket=self._config.cache_bucket,
             Key=cache_key,
-            Body=buf.getvalue(),
+            Body=data,
         )
-        return cache_key
+        return cache_key, len(data)
 
     def _write_to_cache(
         self, table: pa.Table, cache_key: str, overwrite: bool = True

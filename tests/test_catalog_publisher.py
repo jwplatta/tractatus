@@ -511,3 +511,335 @@ def test_all_tables_have_write_properties() -> None:
         assert "write.parquet.row-group-limit" in table_def.properties, (
             f"Missing row-group-limit for {table_name}"
         )
+
+
+# --- Telemetry / byte measurement tests ---
+
+
+def test_cache_to_minio_returns_bytes(tmp_path: Path) -> None:
+    """_cache_to_minio should return (cache_key, byte_count) when client is configured."""
+    config = _make_config(tmp_path, cache_bucket="test-cache")
+    publisher = Publisher(config)
+    publisher._cache_client = MagicMock()
+
+    table = pa.table({"x": pa.array([1, 2, 3], type=pa.int64())})
+    cache_key, cache_bytes = publisher._cache_to_minio(
+        table, "options", "schwab/2026/06/25/SPX_exp2026-07-18_2026-06-25_14-30-00.csv"
+    )
+    publisher.close()
+
+    assert cache_key is not None and cache_key.endswith(".parquet")
+    assert isinstance(cache_bytes, int) and cache_bytes > 0
+
+
+def test_cache_to_minio_returns_none_none_without_client(tmp_path: Path) -> None:
+    """_cache_to_minio should return (None, None) when no cache client is configured."""
+    config = _make_config(tmp_path)  # no cache_bucket
+    publisher = Publisher(config)
+
+    table = pa.table({"x": pa.array([1], type=pa.int64())})
+    cache_key, cache_bytes = publisher._cache_to_minio(table, "options", "some/path.csv")
+    publisher.close()
+
+    assert cache_key is None
+    assert cache_bytes is None
+
+
+def _collect_committed_events(mock_logger: MagicMock) -> list[dict]:
+    return [
+        call[0][0]
+        for call in mock_logger.info.call_args_list
+        if isinstance(call[0][0], dict) and call[0][0].get("event") == "group_committed"
+    ]
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_group_committed_log_contains_all_byte_fields(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """group_committed event should include all identity and byte fields on success."""
+    config = _make_config(tmp_path, cache_bucket="test-cache")
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+
+    mock_snap = MagicMock()
+    mock_snap.snapshot_id = 99
+    mock_snap.summary = {"added-files-size": "12345"}
+    mock_iceberg_table = MagicMock()
+    mock_iceberg_table.current_snapshot.return_value = mock_snap
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+    publisher._cache_client = MagicMock()
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        publisher.run(table_name="options", cache=True)
+        events = _collect_committed_events(mock_logger)
+
+    publisher.close()
+
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["group_id"] == "options/schwab/SPX/2026-06-25"
+    assert ev["snapshot_id"] == 99
+    assert isinstance(ev["input_bytes"], int) and ev["input_bytes"] > 0
+    assert ev["iceberg_bytes"] == 12345
+    assert isinstance(ev["cache_bytes"], int) and ev["cache_bytes"] > 0
+    assert ev["cache_outcome"] == "cached"
+    assert ev["cached"] is True
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_group_committed_iceberg_bytes_none_when_snapshot_unavailable(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """iceberg_bytes and snapshot_id should be None when the snapshot is unavailable."""
+    config = _make_config(tmp_path)
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+
+    mock_iceberg_table = MagicMock()
+    mock_iceberg_table.current_snapshot.return_value = None
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        publisher.run(table_name="options")
+        events = _collect_committed_events(mock_logger)
+
+    publisher.close()
+
+    assert len(events) == 1
+    assert events[0]["iceberg_bytes"] is None
+    assert events[0]["snapshot_id"] is None
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_group_committed_cache_bytes_none_when_no_cache(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """cache_bytes should be None and cache_outcome 'not_attempted' when cache is not requested."""
+    config = _make_config(tmp_path)  # no cache_bucket
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+
+    mock_iceberg_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        publisher.run(table_name="options")
+        events = _collect_committed_events(mock_logger)
+
+    publisher.close()
+
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["cache_bytes"] is None
+    assert ev["cache_outcome"] == "not_attempted"
+    assert ev["cached"] is False
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_group_committed_emitted_after_cache_failure(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """group_committed should be emitted with iceberg_bytes even when cache write raises."""
+    config = _make_config(tmp_path, cache_bucket="test-cache")
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+
+    mock_snap = MagicMock()
+    mock_snap.snapshot_id = 77
+    mock_snap.summary = {"added-files-size": "9999"}
+    mock_iceberg_table = MagicMock()
+    mock_iceberg_table.current_snapshot.return_value = mock_snap
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    publisher = Publisher(config)
+    publisher.run(table_name="options", dry_run=True)
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+    mock_cache_client = MagicMock()
+    mock_cache_client.put_object.side_effect = RuntimeError("MinIO unavailable")
+    publisher._cache_client = mock_cache_client
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        result = publisher.run(table_name="options", cache=True)
+        events = _collect_committed_events(mock_logger)
+        warning_events = [
+            call[0][0]
+            for call in mock_logger.warning.call_args_list
+            if isinstance(call[0][0], dict) and call[0][0].get("event") == "cache_write_failed"
+        ]
+
+    publisher.close()
+
+    # Iceberg commit succeeded
+    assert result.committed == 1
+    assert result.errors == 0
+
+    # group_committed is still emitted with Iceberg measurements preserved
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["iceberg_bytes"] == 9999
+    assert ev["snapshot_id"] == 77
+    assert ev["cache_bytes"] is None
+    assert ev["cache_outcome"] == "cache_failed"
+    assert ev["cached"] is False
+
+    # cache_write_failed warning was emitted
+    assert len(warning_events) == 1
+    assert warning_events[0]["group_id"] == "options/schwab/SPX/2026-06-25"
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_rerun_after_commit_emits_no_group_committed(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """A second publish run on already-committed files should emit no group_committed event."""
+    config = _make_config(tmp_path)
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX")
+
+    mock_iceberg_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+
+    publisher = Publisher(config)
+
+    # First run — commits the file
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+    ):
+        result_first = publisher.run(table_name="options")
+
+    assert result_first.committed == 1
+
+    # Second run — same files are already committed, nothing pending
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        result_second = publisher.run(table_name="options")
+        events = _collect_committed_events(mock_logger)
+
+    publisher.close()
+
+    assert result_second.committed == 0
+    assert len(events) == 0
+
+
+@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
+@patch("tractatus.catalog.publisher.load_catalog")
+def test_new_files_for_existing_group_produce_separate_event(
+    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
+) -> None:
+    """A new file for an already-committed group should produce a second group_committed event."""
+    config = _make_config(tmp_path)
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-18")
+
+    mock_iceberg_table = MagicMock()
+    mock_catalog = MagicMock()
+    mock_catalog.load_table.return_value = mock_iceberg_table
+    mock_load_catalog.return_value = mock_catalog
+
+    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
+
+    publisher = Publisher(config)
+
+    # First run — commits the first file
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        publisher.run(table_name="options")
+        events_first = _collect_committed_events(mock_logger)
+
+    # Second run — a new file arrives for the same group
+    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-25")
+
+    with (
+        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
+        patch(
+            "tractatus.catalog.publisher.validate_options",
+            return_value=(normalized, QualityReport(1, 0, set())),
+        ),
+        patch("tractatus.catalog.publisher.logger") as mock_logger,
+    ):
+        result_second = publisher.run(table_name="options")
+        events_second = _collect_committed_events(mock_logger)
+
+    publisher.close()
+
+    assert len(events_first) == 1
+    assert result_second.committed == 1
+    assert len(events_second) == 1
+    # Both events share the same logical group_id
+    assert (
+        events_first[0]["group_id"]
+        == events_second[0]["group_id"]
+        == "options/schwab/SPX/2026-06-25"
+    )
