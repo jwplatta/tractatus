@@ -394,7 +394,9 @@ class Publisher:
             cache_outcome = "not_attempted"
             if cache and normalized is not None:
                 try:
-                    cache_key, cache_bytes = self._cache_to_minio(normalized, table_name, group_records[0].path)
+                    cache_key, cache_bytes = self._cache_to_minio(
+                        normalized, table_name, group_records[0].path
+                    )
                     if cache_key:
                         for path in paths:
                             self._ledger.mark_cached(path, table_name, cache_key)

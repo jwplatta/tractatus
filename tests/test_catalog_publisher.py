@@ -838,6 +838,8 @@ def test_new_files_for_existing_group_produce_separate_event(
     assert result_second.committed == 1
     assert len(events_second) == 1
     # Both events share the same logical group_id
-    assert events_first[0]["group_id"] == events_second[0]["group_id"] == "options/schwab/SPX/2026-06-25"
-
-
+    assert (
+        events_first[0]["group_id"]
+        == events_second[0]["group_id"]
+        == "options/schwab/SPX/2026-06-25"
+    )
