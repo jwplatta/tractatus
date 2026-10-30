@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import logging
 import re
@@ -283,7 +282,6 @@ class Publisher:
 
             # Computed before any I/O — stable across retries for the same input set
             group_id = f"{table_name}/{provider}/{root}/{sample_date_str}"
-            input_hash = hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest()[:12]
             input_bytes: int = sum(r.size_bytes for r in group_records)
 
             # Stage 1: normalize, validate, append to Iceberg
@@ -449,14 +447,12 @@ class Publisher:
             #   iceberg_bytes — None if snapshot unavailable; int if measured
             #   cache_bytes   — None if not attempted or failed; int if measured
             #   snapshot_id   — Iceberg snapshot ID; unique per commit; deduplicate retries
-            #   input_hash    — SHA-256 prefix of sorted file paths; changes when input set changes
             #   cache_outcome — "not_attempted" | "cached" | "cache_failed"
             logger.info(
                 {
                     "event": "group_committed",
                     "group_id": group_id,
                     "snapshot_id": snapshot_id,
-                    "input_hash": input_hash,
                     "table": table_name,
                     "provider": provider,
                     "root": root,

@@ -593,7 +593,6 @@ def test_group_committed_log_contains_all_byte_fields(
     assert len(events) == 1
     ev = events[0]
     assert ev["group_id"] == "options/schwab/SPX/2026-06-25"
-    assert isinstance(ev["input_hash"], str) and len(ev["input_hash"]) == 12
     assert ev["snapshot_id"] == 99
     assert isinstance(ev["input_bytes"], int) and ev["input_bytes"] > 0
     assert ev["iceberg_bytes"] == 12345
@@ -741,63 +740,3 @@ def test_group_committed_emitted_after_cache_failure(
     assert warning_events[0]["group_id"] == "options/schwab/SPX/2026-06-25"
 
 
-@patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)
-@patch("tractatus.catalog.publisher.load_catalog")
-def test_input_hash_differs_for_different_file_sets(
-    mock_load_catalog: MagicMock, _mock_sort: MagicMock, tmp_path: Path
-) -> None:
-    """Two appends for the same group_id but different files should produce different input_hash values."""
-    config = _make_config(tmp_path)
-
-    mock_iceberg_table = MagicMock()
-    mock_iceberg_table.current_snapshot.return_value = None
-    mock_catalog = MagicMock()
-    mock_catalog.load_table.return_value = mock_iceberg_table
-    mock_load_catalog.return_value = mock_catalog
-
-    normalized = pa.table({"x": pa.array([1], type=pa.int64())})
-
-    # First run: one CSV file
-    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-18")
-    publisher = Publisher(config)
-    publisher.run(table_name="options", dry_run=True)
-
-    with (
-        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
-        patch(
-            "tractatus.catalog.publisher.validate_options",
-            return_value=(normalized, QualityReport(1, 0, set())),
-        ),
-        patch("tractatus.catalog.publisher.logger") as mock_logger,
-    ):
-        publisher.run(table_name="options")
-        events_first = _collect_committed_events(mock_logger)
-
-    publisher.close()
-
-    # Second run: a new CSV file for the same group
-    _create_options_csv(config.data_root, "schwab", date(2026, 6, 25), "SPX", expiry="2026-07-25")
-    publisher2 = Publisher(config)
-    publisher2.run(table_name="options", dry_run=True)
-
-    with (
-        patch("tractatus.catalog.publisher.normalize_table", return_value=(normalized, [])),
-        patch(
-            "tractatus.catalog.publisher.validate_options",
-            return_value=(normalized, QualityReport(1, 0, set())),
-        ),
-        patch("tractatus.catalog.publisher.logger") as mock_logger2,
-    ):
-        publisher2.run(table_name="options")
-        events_second = _collect_committed_events(mock_logger2)
-
-    publisher2.close()
-
-    assert len(events_first) == 1
-    assert len(events_second) == 1
-
-    # Same logical group — same group_id
-    assert events_first[0]["group_id"] == events_second[0]["group_id"]
-
-    # Different input sets — different input_hash
-    assert events_first[0]["input_hash"] != events_second[0]["input_hash"]
