@@ -59,6 +59,20 @@ def _make_csv_table(n_rows: int = 3) -> pa.Table:
 
 
 class TestNormalizeTable:
+    def test_options_populates_sample_date_from_publication_group(self) -> None:
+        table = _make_csv_table().drop(["sample_date"])
+        result, _ = normalize_table(table, "options", sample_date=datetime.date(2026, 11, 11))
+        assert result["sample_date"].to_pylist() == ["2026-11-11"] * 3
+
+    def test_options_group_date_overrides_existing_values(self) -> None:
+        table = _make_csv_table()
+        result, _ = normalize_table(table, "options", sample_date=datetime.date(2026, 11, 11))
+        assert result["sample_date"].to_pylist() == ["2026-11-11"] * 3
+
+    def test_options_without_group_date_preserves_input(self) -> None:
+        result, _ = normalize_table(_make_csv_table(), "options")
+        assert result["sample_date"].to_pylist() == ["x"] * 3
+
     def test_41col_passthrough(self) -> None:
         table = _make_41col_table()
         result, diagnostics = normalize_table(table)

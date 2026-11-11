@@ -7,6 +7,7 @@ and applies fallback logic for timestamp fields.
 from __future__ import annotations
 
 import re
+from datetime import date
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -119,6 +120,7 @@ def normalize_options(
     *,
     option_root: str | None = None,
     provider: str | None = None,
+    sample_date: date | None = None,
 ) -> tuple[pa.Table, list[str]]:
     """Normalize an options Arrow table to the canonical schema."""
     diagnostics: list[str] = []
@@ -190,5 +192,7 @@ def normalize_options(
         diagnostics.append("Populated underlying_symbol from option_root mapping")
 
     table = set_literal_column(table, "provider", provider)
+    if sample_date is not None:
+        table = set_literal_column(table, "sample_date", sample_date.isoformat())
 
     return table, diagnostics

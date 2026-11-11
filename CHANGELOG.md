@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Populate options `sample_date` from the publication group date in Iceberg and cache Parquet output.
+
 ### Changed
 - Root discovery lists only top-level intraday index files instead of recursively enumerating snapshot objects.
 
