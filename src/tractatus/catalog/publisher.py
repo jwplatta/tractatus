@@ -395,7 +395,21 @@ class Publisher:
             if cache and normalized is not None:
                 try:
                     cache_key, cache_bytes = self._cache_to_minio(
-                        normalized, table_name, group_records[0].path
+                        normalized,
+                        table_name,
+                        group_records[0].path,
+                        cache_key=(
+                            self._build_cache_key(
+                                table_name,
+                                {
+                                    "provider": provider,
+                                    "option_root": root,
+                                    "sample_date": str(sample_date_str),
+                                },
+                            )
+                            if table_name == "options"
+                            else None
+                        ),
                     )
                     if cache_key:
                         for path in paths:
@@ -486,6 +500,7 @@ class Publisher:
         table: pa.Table,
         table_name: str,
         path: str,
+        cache_key: str | None = None,
     ) -> tuple[str | None, int | None]:
         """Write parquet to the cache MinIO bucket. Returns (cache_key, bytes) or (None, None)."""
         if self._cache_client is None:
@@ -498,7 +513,7 @@ class Publisher:
         # Cache key mirrors the staging path but with .parquet extension
         stem = PurePosixPath(path).stem
         parent = str(PurePosixPath(path).parent)
-        cache_key = f"{table_name}/{parent}/{stem}.parquet"
+        cache_key = cache_key or f"{table_name}/{parent}/{stem}.parquet"
 
         self._cache_client.put_object(
             Bucket=self._config.cache_bucket,

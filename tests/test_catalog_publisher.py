@@ -325,8 +325,7 @@ def test_cache_to_minio(
     mock_cache_client.put_object.assert_called_once()
     call_kwargs = mock_cache_client.put_object.call_args
     assert call_kwargs[1]["Bucket"] == "test-cache"
-    assert call_kwargs[1]["Key"].startswith("options/")
-    assert call_kwargs[1]["Key"].endswith(".parquet")
+    assert call_kwargs[1]["Key"] == "options/schwab/2026/06/25/SPX_samples_2026-06-25.parquet"
 
 
 @patch("tractatus.catalog.publisher._sort_table", side_effect=lambda t, k: t)

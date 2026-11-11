@@ -14,6 +14,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ## [Unreleased]
 
+### Fixed
+
+- Options publication writes daily MinIO cache files using the option root and sample date instead of an expiration-specific source filename.
+
 ### Added
 
 - Candles discovery supports date-partitioned staging layout `candles/<provider>/<YYYY>/<MM>/<DD>/<frequency>/<symbol>.csv`. Legacy cumulative layout (`candles/<provider>/<frequency>/<symbol>.csv`) remains supported alongside the new format. Date filtering (`--after` / `--before`) now works for candles when using the date-partitioned layout.
