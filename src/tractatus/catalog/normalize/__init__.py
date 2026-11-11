@@ -47,7 +47,9 @@ def normalize_table(
     derived from the file path, e.g. ``AAPL`` or ``SPXW``).
     """
     if table_name == "options":
-        return normalize_options(table, option_root=symbol, provider=provider)
+        return normalize_options(
+            table, option_root=symbol, provider=provider, sample_date=sample_date
+        )
     if table_name == "level_one_equities":
         return normalize_level_one_equities(table, sample_date=sample_date, provider=provider)
     if table_name == "level_one_futures":
