@@ -46,7 +46,7 @@ LEVEL_ONE_OPTIONS_TABLE = TableDef(
         NestedField(field_id=115, name="open_price", field_type=DoubleType(), required=False),
         NestedField(field_id=118, name="last_size", field_type=LongType(), required=False),
         NestedField(field_id=119, name="net_change", field_type=DoubleType(), required=False),
-        NestedField(field_id=120, name="strike_type", field_type=StringType(), required=False),
+        NestedField(field_id=120, name="strike", field_type=DoubleType(), required=False),
         NestedField(field_id=121, name="contract_type", field_type=StringType(), required=False),
         NestedField(field_id=122, name="underlying", field_type=StringType(), required=False),
         NestedField(field_id=123, name="expiration_month", field_type=LongType(), required=False),
@@ -69,7 +69,9 @@ LEVEL_ONE_OPTIONS_TABLE = TableDef(
         ),
         NestedField(field_id=140, name="exchange_id", field_type=StringType(), required=False),
         NestedField(field_id=141, name="exchange_name", field_type=StringType(), required=False),
-        NestedField(field_id=142, name="last_trading_day", field_type=StringType(), required=False),
+        NestedField(
+            field_id=142, name="last_trading_day", field_type=TimestamptzType(), required=False
+        ),
         NestedField(field_id=143, name="settlement_type", field_type=StringType(), required=False),
         NestedField(
             field_id=144, name="net_percent_change", field_type=DoubleType(), required=False
@@ -94,11 +96,13 @@ LEVEL_ONE_OPTIONS_TABLE = TableDef(
             field_id=153, name="indicative_bid_price", field_type=DoubleType(), required=False
         ),
         NestedField(
-            field_id=154, name="indicative_quote_time", field_type=LongType(), required=False
+            field_id=154, name="indicative_quote_time", field_type=TimestamptzType(), required=False
         ),
         NestedField(field_id=155, name="exercise_type", field_type=StringType(), required=False),
         NestedField(field_id=200, name="extra_json", field_type=StringType(), required=False),
         NestedField(field_id=201, name="provider", field_type=StringType(), required=False),
+        NestedField(field_id=202, name="asset_main_type", field_type=StringType(), required=False),
+        NestedField(field_id=203, name="delayed", field_type=BooleanType(), required=False),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
@@ -130,7 +134,7 @@ EXTRA_JSON_FIELDS: dict[str, str] = {
     "15": "open_price",
     "18": "last_size",
     "19": "net_change",
-    "20": "strike_type",
+    "20": "strike",
     "21": "contract_type",
     "22": "underlying",
     "23": "expiration_month",
@@ -163,6 +167,8 @@ EXTRA_JSON_FIELDS: dict[str, str] = {
     "53": "indicative_bid_price",
     "54": "indicative_quote_time",
     "55": "exercise_type",
+    "assetMainType": "asset_main_type",
+    "delayed": "delayed",
 }
 
-TIMESTAMP_FIELDS: set[str] = set()
+TIMESTAMP_FIELDS: set[str] = {"last_trading_day", "indicative_quote_time"}

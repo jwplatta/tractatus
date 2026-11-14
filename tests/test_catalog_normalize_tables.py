@@ -509,7 +509,19 @@ def test_options_level_one_preserves_fields_and_unknown_data() -> None:
         "bid_size": 2,
         "ask_size": 3,
         "volume": 7,
-        "extra_json": json.dumps({"9": 123, "18": 4, "28": 0.5, "unknown": "kept"}),
+        "extra_json": json.dumps(
+            {
+                "9": 123,
+                "18": 4,
+                "20": 7570,
+                "28": 0.5,
+                "42": 1794877200000,
+                "54": 1794604990874,
+                "assetMainType": "OPTION",
+                "delayed": False,
+                "unknown": "kept",
+            }
+        ),
     }
     result, _ = normalize_raw(
         (json.dumps(record) + "\n").encode(),
@@ -521,6 +533,11 @@ def test_options_level_one_preserves_fields_and_unknown_data() -> None:
     assert row["last_size"] == 4
     assert row["open_interest"] == 123
     assert row["delta"] == 0.5
+    assert row["strike"] == 7570
+    assert row["last_trading_day"] == datetime.datetime(2026, 11, 17, 1, tzinfo=datetime.UTC)
+    assert row["indicative_quote_time"].microsecond == 874000
+    assert row["asset_main_type"] == "OPTION"
+    assert row["delayed"] is False
     assert json.loads(row["extra_json"]) == {"unknown": "kept"}
     assert row["received_at"].tzinfo is not None
 
@@ -534,7 +551,7 @@ def test_options_order_book_uses_shared_schema() -> None:
         "received_at": "2026-10-19T14:30:00Z",
         "book_time": "2026-10-19T14:30:00Z",
         "bids_json": json.dumps(
-            [{"0": 1.0, "1": 5, "2": 1, "3": [{"0": "CBOE", "1": 5, "2": 10}]}]
+            [{"0": 43.3, "1": 1, "2": 1, "3": [{"0": "CBOE", "1": 1, "2": 61200004}]}]
         ),
         "asks_json": json.dumps([]),
     }
@@ -542,3 +559,5 @@ def test_options_order_book_uses_shared_schema() -> None:
     row = result.to_pylist()[0]
     assert row["service"] == "OPTIONS_BOOK"
     assert row["bids"][0]["venues"][0]["venue"] == "CBOE"
+    assert row["bids"][0]["price"] == 43.3
+    assert row["asks"] == []
