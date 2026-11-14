@@ -16,6 +16,7 @@ from tractatus.catalog.schemas.economic_events import ECONOMIC_EVENTS_TABLE
 from tractatus.catalog.schemas.fundamentals import FUNDAMENTALS_TABLE
 from tractatus.catalog.schemas.level_one_equities import LEVEL_ONE_EQUITIES_TABLE
 from tractatus.catalog.schemas.level_one_futures import LEVEL_ONE_FUTURES_TABLE
+from tractatus.catalog.schemas.level_one_options import LEVEL_ONE_OPTIONS_TABLE
 from tractatus.catalog.schemas.options import OPTIONS_TABLE
 from tractatus.catalog.schemas.order_book import ORDER_BOOK_TABLE
 
@@ -23,6 +24,7 @@ TABLE_DEFS: dict[str, TableDef] = {
     OPTIONS_TABLE.name: OPTIONS_TABLE,
     LEVEL_ONE_EQUITIES_TABLE.name: LEVEL_ONE_EQUITIES_TABLE,
     LEVEL_ONE_FUTURES_TABLE.name: LEVEL_ONE_FUTURES_TABLE,
+    LEVEL_ONE_OPTIONS_TABLE.name: LEVEL_ONE_OPTIONS_TABLE,
     ORDER_BOOK_TABLE.name: ORDER_BOOK_TABLE,
     CANDLES_TABLE.name: CANDLES_TABLE,
     FUNDAMENTALS_TABLE.name: FUNDAMENTALS_TABLE,
@@ -35,6 +37,7 @@ __all__ = [
     "FUNDAMENTALS_TABLE",
     "LEVEL_ONE_EQUITIES_TABLE",
     "LEVEL_ONE_FUTURES_TABLE",
+    "LEVEL_ONE_OPTIONS_TABLE",
     "OPTIONS_TABLE",
     "ORDER_BOOK_TABLE",
     "TABLE_DEFS",

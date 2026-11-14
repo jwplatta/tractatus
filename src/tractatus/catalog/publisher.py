@@ -48,7 +48,7 @@ def _metadata_from_path(
     """Derive (sample_date, symbol, interval) from a file's relative path."""
     parts = PurePosixPath(relative_path).parts
 
-    if table_name in ("level_one_equities", "level_one_futures", "order_book"):
+    if table_name in ("level_one_equities", "level_one_futures", "level_one_options", "order_book"):
         m = _DATE_DIR_RE.search(relative_path)
         if m:
             return date(int(m.group(1)), int(m.group(2)), int(m.group(3))), None, None
@@ -565,6 +565,7 @@ class Publisher:
         "options": ("sampled_at", ("provider", "option_root", "sample_date")),
         "level_one_equities": ("received_at", ("provider", "symbol", "sample_date")),
         "level_one_futures": ("received_at", ("provider", "symbol", "sample_date")),
+        "level_one_options": ("received_at", ("provider", "symbol", "sample_date")),
         "order_book": ("received_at", ("provider", "symbol", "sample_date")),
         "candles": (None, ("provider", "interval", "symbol")),
         "fundamentals": ("sampled_at", ("provider", "sample_date")),
@@ -583,7 +584,12 @@ class Publisher:
             yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
             return f"options/{provider}/{yyyy}/{mm}/{dd}/{symbol}_samples_{sample_date}.parquet"
 
-        if table_name in ("level_one_equities", "level_one_futures", "order_book"):
+        if table_name in (
+            "level_one_equities",
+            "level_one_futures",
+            "level_one_options",
+            "order_book",
+        ):
             yyyy, mm, dd = sample_date[:4], sample_date[5:7], sample_date[8:10]
             return f"{table_name}/{provider}/{yyyy}/{mm}/{dd}/{symbol}.parquet"
 

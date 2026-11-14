@@ -8,7 +8,7 @@ import json
 import pyarrow as pa
 import pytest
 
-from tractatus.catalog.normalize import normalize_table
+from tractatus.catalog.normalize import normalize_raw, normalize_table
 
 
 class TestNormalizeLevelOneEquities:
@@ -491,3 +491,54 @@ class TestInputSchemaValidation:
         )
         with pytest.raises(ValueError, match="Missing required columns: event_name"):
             normalize_table(table, "economic_events")
+
+
+def test_options_level_one_preserves_fields_and_unknown_data() -> None:
+    record = {
+        "job_type": "level_one",
+        "provider": "schwab",
+        "symbol": "SPXW  261019C03200000",
+        "service": "LEVELONE_OPTIONS",
+        "received_at": "2026-10-19T14:30:00Z",
+        "quote_time": "2026-10-19T14:30:00Z",
+        "trade_time": None,
+        "bid": 1.0,
+        "ask": 2.0,
+        "last": 1.5,
+        "mark": 1.5,
+        "bid_size": 2,
+        "ask_size": 3,
+        "volume": 7,
+        "extra_json": json.dumps({"9": 123, "18": 4, "28": 0.5, "unknown": "kept"}),
+    }
+    result, _ = normalize_raw(
+        (json.dumps(record) + "\n").encode(),
+        "ndjson",
+        "level_one_options",
+        sample_date=datetime.date(2026, 10, 19),
+    )
+    row = result.to_pylist()[0]
+    assert row["last_size"] == 4
+    assert row["open_interest"] == 123
+    assert row["delta"] == 0.5
+    assert json.loads(row["extra_json"]) == {"unknown": "kept"}
+    assert row["received_at"].tzinfo is not None
+
+
+def test_options_order_book_uses_shared_schema() -> None:
+    record = {
+        "job_type": "order_book",
+        "provider": "schwab",
+        "symbol": "SPXW  261019C03200000",
+        "service": "OPTIONS_BOOK",
+        "received_at": "2026-10-19T14:30:00Z",
+        "book_time": "2026-10-19T14:30:00Z",
+        "bids_json": json.dumps(
+            [{"0": 1.0, "1": 5, "2": 1, "3": [{"0": "CBOE", "1": 5, "2": 10}]}]
+        ),
+        "asks_json": json.dumps([]),
+    }
+    result, _ = normalize_raw((json.dumps(record) + "\n").encode(), "ndjson", "order_book")
+    row = result.to_pylist()[0]
+    assert row["service"] == "OPTIONS_BOOK"
+    assert row["bids"][0]["venues"][0]["venue"] == "CBOE"
