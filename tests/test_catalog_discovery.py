@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -129,7 +130,8 @@ def _create_ndjson(base: Path, table: str, provider: str, d: date, symbol: str) 
     """Create a minimal NDJSON file."""
     path = base / table / provider / f"{d:%Y}" / f"{d:%m}" / f"{d:%d}" / f"{symbol}.ndjson"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"symbol":"' + symbol + '"}\n')
+    service = "LEVELONE_FUTURES" if symbol.startswith("^") else "LEVELONE_EQUITIES"
+    path.write_text('{"symbol":"' + symbol + '","service":"' + service + '"}\n')
     return path
 
 
@@ -283,3 +285,21 @@ def test_discover_ignores_non_matching_extensions(tmp_path: Path) -> None:
     files = discover_files_flat(store)
     assert len(files) == 1
     assert files[0].file_format == "csv"
+
+
+def test_level_one_service_routing_and_reject_mixed(tmp_path: Path) -> None:
+    d = date(2026, 10, 15)
+    path = _create_ndjson(tmp_path, "level_one", "schwab", d, "SPXW  261019C03200000")
+    path.write_text(json.dumps({"service": "LEVELONE_OPTIONS"}) + "\n")
+    store = LocalFileStore(tmp_path)
+    for table in ("level_one_equities", "level_one_futures", "level_one_options"):
+        assert len(discover_files_flat(store, table)) == (table == "level_one_options")
+        assert len(discover_files_flat(store, table, after=d, before=date(2026, 10, 16))) == (
+            table == "level_one_options"
+        )
+    path.write_text(path.read_text() + json.dumps({"service": "LEVELONE_EQUITIES"}) + "\n")
+    with pytest.raises(ValueError, match="Expected one level-one service"):
+        discover_files_flat(store, "level_one_options")
+    path.write_text(json.dumps({"service": "LEVELONE_FOREX"}) + "\n")
+    with pytest.raises(ValueError, match="Unsupported level-one service"):
+        discover_files_flat(store, "level_one_options")

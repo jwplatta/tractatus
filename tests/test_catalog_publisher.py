@@ -56,7 +56,9 @@ def _create_level_one_ndjson(data_root: Path, provider: str, d: date, symbol: st
         data_root / "level_one" / provider / f"{d:%Y}" / f"{d:%m}" / f"{d:%d}" / f"{symbol}.ndjson"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"symbol":"AAPL","received_at":"2026-06-25T14:30:00Z"}\n')
+    path.write_text(
+        '{"symbol":"AAPL","service":"LEVELONE_EQUITIES","received_at":"2026-06-25T14:30:00Z"}\n'
+    )
     return path
 
 

@@ -41,9 +41,13 @@ from tractatus.catalog.schemas.level_one_futures import (
 from tractatus.catalog.schemas.level_one_futures import (
     TIMESTAMP_FIELDS as FUT_TS_FIELDS,
 )
+from tractatus.catalog.schemas.level_one_options import EXTRA_JSON_FIELDS as OPT_FIELDS
+from tractatus.catalog.schemas.level_one_options import LEVEL_ONE_OPTIONS_TABLE
+from tractatus.catalog.schemas.level_one_options import TIMESTAMP_FIELDS as OPT_TS_FIELDS
 
 _EQ_COLUMNS, _EQ_TYPES = get_canonical(LEVEL_ONE_EQUITIES_TABLE.schema)
 _FUT_COLUMNS, _FUT_TYPES = get_canonical(LEVEL_ONE_FUTURES_TABLE.schema)
+_OPT_COLUMNS, _OPT_TYPES = get_canonical(LEVEL_ONE_OPTIONS_TABLE.schema)
 
 # Expected input schema from tickrake's NDJSON raw contract.
 _EXPECTED_INPUT: dict[str, pa.DataType] = {
@@ -231,3 +235,23 @@ def normalize_level_one_futures(
     table = set_literal_column(table, "provider", provider)
 
     return table, diagnostics
+
+
+def normalize_level_one_options(
+    table: pa.Table, sample_date: date_type | None = None, provider: str | None = None
+) -> tuple[pa.Table, list[str]]:
+    """Normalize options level-one events using the options feed field map."""
+    table, diagnostics = _strip_metadata_fields(table)
+    table, messages = validate_input_schema(table, _EXPECTED_INPUT)
+    diagnostics.extend(messages)
+    table, messages = _convert_source_timestamps(table)
+    diagnostics.extend(messages)
+    table, messages = _unpack_extra_json(table, OPT_FIELDS, _OPT_TYPES, OPT_TS_FIELDS)
+    diagnostics.extend(messages)
+    if sample_date is not None and "sample_date" not in table.column_names:
+        table = table.append_column(
+            "sample_date", pa.array([sample_date] * len(table), type=pa.date32())
+        )
+    table, messages = align_to_schema(table, _OPT_COLUMNS, _OPT_TYPES)
+    diagnostics.extend(messages)
+    return set_literal_column(table, "provider", provider), diagnostics

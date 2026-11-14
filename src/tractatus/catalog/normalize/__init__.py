@@ -18,6 +18,7 @@ from tractatus.catalog.normalize.fundamentals import normalize_fundamentals
 from tractatus.catalog.normalize.level_one import (
     normalize_level_one_equities,
     normalize_level_one_futures,
+    normalize_level_one_options,
 )
 from tractatus.catalog.normalize.options import normalize_options
 from tractatus.catalog.normalize.order_book import normalize_order_book
@@ -46,6 +47,17 @@ def normalize_table(
     For options, ``symbol`` is used as the ``option_root`` (the underlying root ticker
     derived from the file path, e.g. ``AAPL`` or ``SPXW``).
     """
+    expected_service = {
+        "level_one_equities": "LEVELONE_EQUITIES",
+        "level_one_futures": "LEVELONE_FUTURES",
+        "level_one_options": "LEVELONE_OPTIONS",
+    }.get(table_name)
+    if expected_service is not None and "service" in table.column_names:
+        services = set(table.column("service").to_pylist())
+        if services != {expected_service}:
+            raise ValueError(
+                f"Expected service {expected_service} for {table_name}; got {services}"
+            )
     if table_name == "options":
         return normalize_options(
             table, option_root=symbol, provider=provider, sample_date=sample_date
@@ -54,6 +66,8 @@ def normalize_table(
         return normalize_level_one_equities(table, sample_date=sample_date, provider=provider)
     if table_name == "level_one_futures":
         return normalize_level_one_futures(table, sample_date=sample_date, provider=provider)
+    if table_name == "level_one_options":
+        return normalize_level_one_options(table, sample_date=sample_date, provider=provider)
     if table_name == "order_book":
         return normalize_order_book(table, sample_date=sample_date, provider=provider)
     if table_name == "candles":

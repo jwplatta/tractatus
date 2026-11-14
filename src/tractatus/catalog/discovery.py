@@ -5,6 +5,7 @@ Supports per-table directory layouts via ``_PARSERS``.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
@@ -88,22 +89,6 @@ def _parse_symbol_ndjson(key: str) -> ParseResult:
     return provider, symbol, sample_date, {}
 
 
-def _parse_equities_ndjson(key: str) -> ParseResult:
-    """Equities level-one: same as symbol NDJSON but excludes ^ prefix (futures)."""
-    p = PurePosixPath(key)
-    if p.stem.startswith("^"):
-        return None
-    return _parse_symbol_ndjson(key)
-
-
-def _parse_futures_ndjson(key: str) -> ParseResult:
-    """Futures level-one: same as symbol NDJSON but only ^ prefix symbols."""
-    p = PurePosixPath(key)
-    if not p.stem.startswith("^"):
-        return None
-    return _parse_symbol_ndjson(key)
-
-
 def _parse_candles(key: str) -> ParseResult:
     """Candles CSV: provider/YYYY/MM/DD/frequency/SYMBOL.csv"""
     p = PurePosixPath(key)
@@ -163,8 +148,9 @@ def _parse_economic_events(key: str) -> ParseResult:
 
 _PARSERS: dict[str, Callable[[str], ParseResult]] = {
     "options": _parse_options,
-    "level_one_equities": _parse_equities_ndjson,
-    "level_one_futures": _parse_futures_ndjson,
+    "level_one_equities": _parse_symbol_ndjson,
+    "level_one_futures": _parse_symbol_ndjson,
+    "level_one_options": _parse_symbol_ndjson,
     "order_book": _parse_symbol_ndjson,
     "candles": _parse_candles,
     "fundamentals": _parse_fundamentals,
@@ -175,6 +161,7 @@ _PARSERS: dict[str, Callable[[str], ParseResult]] = {
 _DATA_DIR_NAMES: dict[str, str] = {
     "level_one_equities": "level_one",
     "level_one_futures": "level_one",
+    "level_one_options": "level_one",
 }
 
 # File extensions to scan per table.
@@ -182,11 +169,36 @@ _FILE_EXTENSIONS: dict[str, list[str]] = {
     "options": [".csv"],
     "level_one_equities": [".ndjson"],
     "level_one_futures": [".ndjson"],
+    "level_one_options": [".ndjson"],
     "order_book": [".ndjson"],
     "candles": [".csv"],
     "fundamentals": [".ndjson"],
     "economic_events": [".ndjson"],
 }
+
+_LEVEL_ONE_SERVICES = {
+    "LEVELONE_EQUITIES": "level_one_equities",
+    "LEVELONE_FUTURES": "level_one_futures",
+    "LEVELONE_OPTIONS": "level_one_options",
+}
+
+
+def _matches_service(store: FileStore, key: str, table_name: str) -> bool:
+    if table_name not in _LEVEL_ONE_SERVICES.values():
+        return True
+    services = set()
+    for line in store.read_raw(key).splitlines():
+        if line.strip():
+            record = json.loads(line)
+            if not isinstance(record, dict) or not isinstance(record.get("service"), str):
+                raise ValueError(f"Missing level-one service in {key}")
+            services.add(record["service"])
+    if len(services) != 1:
+        raise ValueError(f"Expected one level-one service in {key}, found {sorted(services)}")
+    service = services.pop()
+    if service not in _LEVEL_ONE_SERVICES:
+        raise ValueError(f"Unsupported level-one service {service!r} in {key}")
+    return _LEVEL_ONE_SERVICES[service] == table_name
 
 
 def data_dir_name(table_name: str) -> str:
@@ -271,7 +283,7 @@ def discover_files(
                         else full_key
                     )
                     parsed = parser(relative_key)
-                    if parsed is None:
+                    if parsed is None or not _matches_service(store, full_key, table_name):
                         continue
                     _, root, sample_date, metadata = parsed
                     day_files.append(
@@ -296,7 +308,7 @@ def discover_files(
                 full_key[len(table_dir) + 1 :] if full_key.startswith(table_dir + "/") else full_key
             )
             parsed = parser(relative_key)
-            if parsed is None:
+            if parsed is None or not _matches_service(store, full_key, table_name):
                 continue
             provider, root, sample_date, metadata = parsed
             results.append(

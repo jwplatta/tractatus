@@ -9,6 +9,7 @@
 - Root discovery lists only top-level intraday index files instead of recursively enumerating snapshot objects.
 
 ### Added
+- Publish options level-one streams to a dedicated Iceberg table, routing streams by service.
 - CacheReader source inventories with remote revisions, task-owned public query connections, and projected daily nearest-DTE option snapshots for dashboard caches.
 
 All notable changes to this project will be documented in this file.
